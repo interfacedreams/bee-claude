@@ -7,6 +7,7 @@ export interface PersistedNode {
   height?: number // only set when the user resized; otherwise height tracks content
   title: string
   minimized?: boolean
+  sessionId?: string
 }
 
 export interface PersistedEdge {

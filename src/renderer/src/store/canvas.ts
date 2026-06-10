@@ -23,6 +23,7 @@ export interface ChatData {
   draft: string
   minimized: boolean
   savedHeight?: number // explicit height to restore when un-minimizing
+  sessionId?: string // Agent SDK session; set after the first turn, used for resume
   [key: string]: unknown
 }
 
@@ -104,17 +105,6 @@ function findFreeSpot(nodes: ChatNode[], view: Rect): { x: number; y: number } {
   }
 }
 
-// M1 stand-in for the Agent SDK (wired in M2): streams a canned markdown reply.
-const FAKE_REPLY = [
-  'This is a **stub response** — the real Claude Code agent lands in milestone 2.\n\n',
-  'What this proves:\n\n',
-  '- Streaming into the transcript\n',
-  '- Per-node send lock (Enter is inert here until I finish)\n',
-  '- Markdown rendering\n\n',
-  '```ts\nconst answer = 42\n```\n\n',
-  'Try sending from another node while this one is still streaming — that should work.'
-].join('')
-
 interface CanvasState {
   nodes: ChatNode[]
   viewport: Viewport
@@ -153,7 +143,8 @@ export const useCanvasStore = create<CanvasState>((set, get) => {
             width: n.width ?? NODE_W,
             ...(height != null ? { height } : {}),
             title: n.data.title,
-            ...(n.data.minimized ? { minimized: true } : {})
+            ...(n.data.minimized ? { minimized: true } : {}),
+            ...(n.data.sessionId ? { sessionId: n.data.sessionId } : {})
           }
         }),
         edges: [],
@@ -242,21 +233,7 @@ export const useCanvasStore = create<CanvasState>((set, get) => {
       }))
       persist() // title may have changed
 
-      // TODO(M2): replace with AgentService over IPC channel `thread:<nodeId>`.
-      let i = 0
-      const tick = (): void => {
-        const cur = get().nodes.find((n) => n.id === id)
-        if (!cur) return // node was discarded
-        i = Math.min(i + 4, FAKE_REPLY.length)
-        patchData(id, {
-          messages: cur.data.messages.map((m) =>
-            m.id === assistantMsg.id ? { ...m, text: FAKE_REPLY.slice(0, i) } : m
-          )
-        })
-        if (i < FAKE_REPLY.length) setTimeout(tick, 24)
-        else patchData(id, { status: 'idle' })
-      }
-      setTimeout(tick, 300)
+      void window.api.thread.send({ nodeId: id, text, sessionId: node.data.sessionId })
     },
 
     load: async () => {
@@ -273,7 +250,8 @@ export const useCanvasStore = create<CanvasState>((set, get) => {
             title: p.title,
             status: p.title ? 'idle' : 'empty',
             minimized: p.minimized ?? false,
-            savedHeight: p.minimized ? p.height : undefined
+            savedHeight: p.minimized ? p.height : undefined,
+            sessionId: p.sessionId
           }),
           id: p.id,
           width: p.width,
@@ -282,5 +260,41 @@ export const useCanvasStore = create<CanvasState>((set, get) => {
       })
       return doc.viewport
     }
+  }
+})
+
+// Stream events from the main process (one Agent SDK query per turn, any number of
+// nodes streaming concurrently). Registered once at module load.
+window.api.thread.onEvent((event) => {
+  const { setState } = useCanvasStore
+  const patch = (id: string, fn: (data: ChatData) => Partial<ChatData>): void => {
+    setState((s) => ({
+      nodes: s.nodes.map((n) => (n.id === id ? { ...n, data: { ...n.data, ...fn(n.data) } } : n))
+    }))
+  }
+
+  if (event.type === 'session' && event.sessionId) {
+    patch(event.nodeId, () => ({ sessionId: event.sessionId }))
+  } else if (event.type === 'delta' && event.text) {
+    patch(event.nodeId, (data) => {
+      const last = data.messages[data.messages.length - 1]
+      if (!last || last.role !== 'assistant') return {}
+      return {
+        messages: [...data.messages.slice(0, -1), { ...last, text: last.text + event.text }]
+      }
+    })
+  } else if (event.type === 'done') {
+    patch(event.nodeId, (data) => {
+      if (event.ok !== false) return { status: 'idle' }
+      const last = data.messages[data.messages.length - 1]
+      const note = `\n\n⚠️ ${event.error ?? 'The agent run failed.'}`
+      return {
+        status: 'idle',
+        messages:
+          last && last.role === 'assistant'
+            ? [...data.messages.slice(0, -1), { ...last, text: last.text + note }]
+            : data.messages
+      }
+    })
   }
 })

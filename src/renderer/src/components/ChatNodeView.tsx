@@ -5,10 +5,21 @@ import Markdown from 'react-markdown'
 import { useCanvasStore, type ChatNode, type Message } from '../store/canvas'
 import BeeIcon from './BeeIcon'
 
-function MessageView({ message }: { message: Message }): React.JSX.Element {
+function MessageView({
+  message,
+  pending
+}: {
+  message: Message
+  pending?: boolean
+}): React.JSX.Element {
   if (message.role === 'user') {
     return (
       <div className="mb-2 w-full bg-neutral-100 px-3 py-2 whitespace-pre-wrap">{message.text}</div>
+    )
+  }
+  if (pending && !message.text) {
+    return (
+      <div className="mb-2 animate-pulse px-3 py-1 tracking-widest text-neutral-400">●●●</div>
     )
   }
   return (
@@ -73,7 +84,11 @@ function ChatNodeView({ id, data, selected }: NodeProps<ChatNode>): React.JSX.El
     const el = scrollRef.current
     if (!el) return
     const onWheel = (e: WheelEvent): void => {
-      if (!(e.metaKey || e.ctrlKey)) return
+      if (!(e.metaKey || e.ctrlKey)) {
+        // Any upward wheel during streaming releases the auto-follow immediately.
+        if (e.deltaY < 0) stickToBottom.current = false
+        return
+      }
       e.preventDefault()
       e.stopPropagation()
       const pane = el.closest('.react-flow')?.querySelector('.react-flow__pane')
@@ -100,7 +115,10 @@ function ChatNodeView({ id, data, selected }: NodeProps<ChatNode>): React.JSX.El
   const stickToBottom = useRef(true)
   const handleScroll = (): void => {
     const el = scrollRef.current
-    if (el) stickToBottom.current = el.scrollHeight - el.scrollTop - el.clientHeight < 48
+    if (!el) return
+    const distanceFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight
+    if (distanceFromBottom < 8) stickToBottom.current = true
+    else if (distanceFromBottom > 48) stickToBottom.current = false
   }
   useEffect(() => {
     const el = scrollRef.current
@@ -178,8 +196,12 @@ function ChatNodeView({ id, data, selected }: NodeProps<ChatNode>): React.JSX.El
             onScroll={handleScroll}
             className="nowheel select-text transcript-scroll min-h-0 flex-1 overflow-y-auto pb-1 text-[16px] leading-relaxed text-neutral-900"
           >
-            {data.messages.map((m) => (
-              <MessageView key={m.id} message={m} />
+            {data.messages.map((m, i) => (
+              <MessageView
+                key={m.id}
+                message={m}
+                pending={streaming && i === data.messages.length - 1}
+              />
             ))}
           </div>
         </div>

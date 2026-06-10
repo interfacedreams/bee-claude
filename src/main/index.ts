@@ -1,14 +1,87 @@
 import { app, shell, BrowserWindow, ipcMain } from 'electron'
-import { promises as fs } from 'fs'
+import { promises as fs, readFileSync } from 'fs'
 import { join } from 'path'
 import { electronApp, optimizer, is } from '@electron-toolkit/utils'
+import { query } from '@anthropic-ai/claude-agent-sdk'
 import icon from '../../resources/icon.png?asset'
 import type { CanvasDoc } from '../shared/types'
 
-// M1: the canvas is rooted at the dev repo (cwd). M2 adds the repo picker (RepoService).
+// M1: the canvas is rooted at the dev repo (cwd). Repo picker comes later (RepoService).
 const repoRoot = process.cwd()
 const canvasDir = join(repoRoot, '.canvas')
 const canvasFile = join(canvasDir, 'canvas.json')
+
+// Minimal .env loader (ANTHROPIC_API_KEY etc.) — real values never leave the main process.
+function loadDotEnv(): void {
+  try {
+    for (const line of readFileSync(join(repoRoot, '.env'), 'utf8').split('\n')) {
+      const m = line.match(/^\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*?)\s*$/)
+      if (m && process.env[m[1]] === undefined) {
+        process.env[m[1]] = m[2].replace(/^["']|["']$/g, '')
+      }
+    }
+  } catch {
+    // no .env — fine if the key is already in the environment
+  }
+}
+
+interface ThreadSendArgs {
+  nodeId: string
+  text: string
+  sessionId?: string
+}
+
+type ThreadEvent =
+  | { nodeId: string; type: 'session'; sessionId: string }
+  | { nodeId: string; type: 'delta'; text: string }
+  | { nodeId: string; type: 'done'; ok: boolean; error?: string }
+
+function registerThreadIpc(): void {
+  ipcMain.handle('thread:send', async (event, { nodeId, text, sessionId }: ThreadSendArgs) => {
+    const wc = event.sender
+    const emit = (payload: ThreadEvent): void => {
+      if (!wc.isDestroyed()) wc.send('thread:event', payload)
+    }
+
+    try {
+      const turn = query({
+        prompt: text,
+        options: {
+          cwd: repoRoot,
+          resume: sessionId,
+          systemPrompt: { type: 'preset', preset: 'claude_code' },
+          settingSources: ['project'], // required or CLAUDE.md is not loaded
+          permissionMode: 'acceptEdits',
+          includePartialMessages: true
+        }
+      })
+
+      for await (const msg of turn) {
+        if (msg.type === 'system' && msg.subtype === 'init') {
+          emit({ nodeId, type: 'session', sessionId: msg.session_id })
+        } else if (msg.type === 'stream_event') {
+          const ev = msg.event
+          if (
+            ev.type === 'content_block_delta' &&
+            ev.delta.type === 'text_delta' &&
+            msg.parent_tool_use_id === null
+          ) {
+            emit({ nodeId, type: 'delta', text: ev.delta.text })
+          }
+        } else if (msg.type === 'result') {
+          emit({
+            nodeId,
+            type: 'done',
+            ok: msg.subtype === 'success',
+            ...(msg.subtype !== 'success' ? { error: msg.subtype } : {})
+          })
+        }
+      }
+    } catch (err) {
+      emit({ nodeId, type: 'done', ok: false, error: String(err) })
+    }
+  })
+}
 
 function registerCanvasIpc(): void {
   ipcMain.handle('canvas:load', async (): Promise<CanvasDoc | null> => {
@@ -71,7 +144,9 @@ app.whenReady().then(() => {
     optimizer.watchWindowShortcuts(window)
   })
 
+  loadDotEnv()
   registerCanvasIpc()
+  registerThreadIpc()
 
   createWindow()
 
