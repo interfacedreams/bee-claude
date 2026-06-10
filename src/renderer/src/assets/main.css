@@ -1,0 +1,99 @@
+@import 'tailwindcss';
+
+html,
+body,
+#root {
+  height: 100%;
+  margin: 0;
+}
+
+body {
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+  -webkit-font-smoothing: antialiased;
+  overflow: hidden;
+}
+
+/* React Flow disables selection inside nodes; re-enable it for transcript text */
+.react-flow__node .select-text,
+.react-flow__node .select-text * {
+  user-select: text;
+  -webkit-user-select: text;
+}
+
+/* Wheel zooms the canvas everywhere, so transcripts scroll via a visible scrollbar */
+.transcript-scroll::-webkit-scrollbar {
+  width: 8px;
+}
+.transcript-scroll::-webkit-scrollbar-thumb {
+  background: var(--color-neutral-300);
+  border-radius: 4px;
+}
+.transcript-scroll::-webkit-scrollbar-thumb:hover {
+  background: var(--color-neutral-400);
+}
+
+/* Minimal markdown styling for assistant messages */
+.prose-chat > :first-child {
+  margin-top: 0;
+}
+.prose-chat > :last-child {
+  margin-bottom: 0;
+}
+.prose-chat p {
+  margin: 0 0 0.75em;
+}
+.prose-chat ul,
+.prose-chat ol {
+  margin: 0 0 0.75em;
+  padding-left: 1.4em;
+}
+.prose-chat ul {
+  list-style: disc;
+}
+.prose-chat ol {
+  list-style: decimal;
+}
+.prose-chat h1,
+.prose-chat h2,
+.prose-chat h3,
+.prose-chat h4 {
+  font-weight: 600;
+  margin: 0.75em 0 0.5em;
+}
+.prose-chat h1 {
+  font-size: 1.25em;
+}
+.prose-chat h2 {
+  font-size: 1.15em;
+}
+.prose-chat h3 {
+  font-size: 1.05em;
+}
+.prose-chat pre {
+  background: var(--color-neutral-100);
+  border-radius: 8px;
+  padding: 0.6em 0.8em;
+  margin: 0 0 0.75em;
+  overflow-x: auto;
+  font-size: 0.85em;
+}
+.prose-chat code {
+  background: var(--color-neutral-100);
+  border-radius: 4px;
+  padding: 0.1em 0.3em;
+  font-size: 0.875em;
+}
+.prose-chat pre code {
+  background: none;
+  padding: 0;
+}
+.prose-chat blockquote {
+  border-left: 3px solid var(--color-neutral-300);
+  margin: 0 0 0.75em;
+  padding-left: 0.85em;
+  color: var(--color-neutral-600);
+}
+.prose-chat a {
+  color: var(--color-blue-600);
+  text-decoration: underline;
+}

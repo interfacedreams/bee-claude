@@ -1,0 +1,17 @@
+node_modules
+dist
+out
+.DS_Store
+.eslintcache
+*.log*
+
+# secrets (M2: ANTHROPIC_API_KEY fallback)
+.env
+.env.*
+
+# local-only Claude Code settings
+.claude/settings.local.json
+
+# canvas data (dev repo)
+.canvas/
+PLAN.md
