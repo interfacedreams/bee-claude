@@ -23,6 +23,7 @@
     "@electron-toolkit/preload": "^3.0.2",
     "@electron-toolkit/utils": "^4.0.0",
     "@xyflow/react": "^12.11.0",
+    "lucide-react": "^1.17.0",
     "react-markdown": "^10.1.0",
     "react-textarea-autosize": "^8.5.9",
     "zustand": "^5.0.14"

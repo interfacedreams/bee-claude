@@ -1,10 +1,17 @@
 import { app, shell, BrowserWindow, dialog, ipcMain } from 'electron'
+import { randomUUID } from 'crypto'
 import { promises as fs, readFileSync } from 'fs'
 import { basename, join } from 'path'
 import { electronApp, optimizer, is } from '@electron-toolkit/utils'
 import { query } from '@anthropic-ai/claude-agent-sdk'
 import icon from '../../resources/icon.png?asset'
-import type { CanvasDoc, RepoState } from '../shared/types'
+import type {
+  CanvasDoc,
+  PermissionReply,
+  RepoState,
+  ThreadEvent,
+  ThreadSendArgs
+} from '../shared/types'
 
 // The repo the canvas is rooted at: the agent's cwd and the home of
 // .canvas/canvas.json. Chosen by the user and remembered across launches —
@@ -105,68 +112,116 @@ function loadDotEnv(): void {
   }
 }
 
-interface ThreadSendArgs {
-  nodeId: string
-  text: string
-  sessionId?: string
-}
-
-type ThreadEvent =
-  | { nodeId: string; type: 'session'; sessionId: string }
-  | { nodeId: string; type: 'delta'; text: string }
-  | { nodeId: string; type: 'done'; ok: boolean; error?: string }
-
 function registerThreadIpc(): void {
-  ipcMain.handle('thread:send', async (event, { nodeId, text, sessionId }: ThreadSendArgs) => {
-    const wc = event.sender
-    const emit = (payload: ThreadEvent): void => {
-      if (!wc.isDestroyed()) wc.send('thread:event', payload)
-    }
+  // Permission requests in flight: requestId → resolver for the user's verdict.
+  // canUseTool blocks the SDK turn until the renderer answers via thread:permission.
+  const pendingPermissions = new Map<string, (allow: boolean) => void>()
 
-    const root = repoRoot
-    if (!root) {
-      emit({ nodeId, type: 'done', ok: false, error: 'No repository selected' })
-      return
-    }
-
-    try {
-      const turn = query({
-        prompt: text,
-        options: {
-          cwd: root,
-          resume: sessionId,
-          systemPrompt: { type: 'preset', preset: 'claude_code' },
-          settingSources: ['project'], // required or CLAUDE.md is not loaded
-          permissionMode: 'acceptEdits',
-          includePartialMessages: true
-        }
-      })
-
-      for await (const msg of turn) {
-        if (msg.type === 'system' && msg.subtype === 'init') {
-          emit({ nodeId, type: 'session', sessionId: msg.session_id })
-        } else if (msg.type === 'stream_event') {
-          const ev = msg.event
-          if (
-            ev.type === 'content_block_delta' &&
-            ev.delta.type === 'text_delta' &&
-            msg.parent_tool_use_id === null
-          ) {
-            emit({ nodeId, type: 'delta', text: ev.delta.text })
-          }
-        } else if (msg.type === 'result') {
-          emit({
-            nodeId,
-            type: 'done',
-            ok: msg.subtype === 'success',
-            ...(msg.subtype !== 'success' ? { error: msg.subtype } : {})
-          })
-        }
-      }
-    } catch (err) {
-      emit({ nodeId, type: 'done', ok: false, error: String(err) })
-    }
+  ipcMain.on('thread:permission', (_event, { requestId, allow }: PermissionReply) => {
+    pendingPermissions.get(requestId)?.(allow)
   })
+
+  ipcMain.handle(
+    'thread:send',
+    async (event, { nodeId, text, sessionId, forkFrom }: ThreadSendArgs) => {
+      const wc = event.sender
+      const emit = (payload: ThreadEvent): void => {
+        if (!wc.isDestroyed()) wc.send('thread:event', payload)
+      }
+
+      const root = repoRoot
+      if (!root) {
+        emit({ nodeId, type: 'done', ok: false, error: 'No repository selected' })
+        return
+      }
+
+      try {
+        const turn = query({
+          prompt: text,
+          options: {
+            cwd: root,
+            resume: forkFrom?.sessionId ?? sessionId,
+            // Forking resumes the parent transcript truncated at the anchor message
+            // under a NEW session id. The prefix is byte-identical, so the first
+            // forked turn rides the parent's prompt cache.
+            ...(forkFrom ? { forkSession: true, resumeSessionAt: forkFrom.messageUuid } : {}),
+            systemPrompt: { type: 'preset', preset: 'claude_code' },
+            settingSources: ['project'], // required or CLAUDE.md is not loaded
+            permissionMode: 'acceptEdits',
+            includePartialMessages: true,
+            // Tools outside acceptEdits' auto-approval (WebSearch, Bash, …) land
+            // here. Without this callback the SDK silently auto-denies them.
+            canUseTool: async (toolName, input, { signal, title }) => {
+              const requestId = randomUUID()
+              const allow = await new Promise<boolean>((resolve) => {
+                if (wc.isDestroyed()) {
+                  resolve(false)
+                  return
+                }
+                pendingPermissions.set(requestId, resolve)
+                signal.addEventListener('abort', () => resolve(false), { once: true })
+                emit({
+                  nodeId,
+                  type: 'permission',
+                  request: { requestId, toolName, ...(title ? { title } : {}), input }
+                })
+              })
+              pendingPermissions.delete(requestId)
+              emit({ nodeId, type: 'permission-resolved', requestId })
+              return allow
+                ? { behavior: 'allow', updatedInput: input }
+                : { behavior: 'deny', message: 'The user declined this tool use.' }
+            }
+          }
+        })
+
+        // resumeSessionAt anchors on assistant-message uuids — remember the turn's last.
+        let lastAssistantUuid: string | undefined
+
+        for await (const msg of turn) {
+          if (msg.type === 'system' && msg.subtype === 'init') {
+            emit({ nodeId, type: 'session', sessionId: msg.session_id })
+          } else if (msg.type === 'assistant' && msg.parent_tool_use_id === null) {
+            lastAssistantUuid = msg.uuid
+          } else if (msg.type === 'stream_event') {
+            const ev = msg.event
+            if (
+              ev.type === 'content_block_delta' &&
+              ev.delta.type === 'text_delta' &&
+              msg.parent_tool_use_id === null
+            ) {
+              emit({ nodeId, type: 'delta', text: ev.delta.text })
+            }
+          } else if (msg.type === 'result') {
+            const u = msg.usage
+            console.log(
+              `[turn] node=${nodeId.slice(0, 8)} session=${msg.session_id.slice(0, 8)}` +
+                `${forkFrom ? ` fork-of=${forkFrom.sessionId.slice(0, 8)}@${forkFrom.messageUuid.slice(0, 8)}` : ''}` +
+                ` in=${u.input_tokens} cache_read=${u.cache_read_input_tokens}` +
+                ` cache_create=${u.cache_creation_input_tokens} out=${u.output_tokens}` +
+                ` cost=$${msg.total_cost_usd.toFixed(4)}`
+            )
+            emit({
+              nodeId,
+              type: 'done',
+              ok: msg.subtype === 'success',
+              ...(lastAssistantUuid ? { messageUuid: lastAssistantUuid } : {}),
+              usage: {
+                inputTokens: msg.usage.input_tokens,
+                outputTokens: msg.usage.output_tokens,
+                cacheReadTokens: msg.usage.cache_read_input_tokens,
+                cacheCreationTokens: msg.usage.cache_creation_input_tokens,
+                costUsd: msg.total_cost_usd
+              },
+              ...(msg.subtype !== 'success' ? { error: msg.subtype } : {})
+            })
+          }
+        }
+      } catch (err) {
+        emit({ nodeId, type: 'done', ok: false, error: String(err) })
+      }
+    }
+  )
 }
 
 function registerCanvasIpc(): void {
