@@ -1,14 +1,18 @@
 import { app, shell, BrowserWindow, dialog, ipcMain } from 'electron'
 import { randomUUID } from 'crypto'
 import { promises as fs, readFileSync } from 'fs'
-import { basename, join } from 'path'
+import { basename, join, resolve } from 'path'
 import { electronApp, optimizer, is } from '@electron-toolkit/utils'
 import { query } from '@anthropic-ai/claude-agent-sdk'
 import icon from '../../resources/icon.png?asset'
 import type {
   CanvasDoc,
+  NoteDoc,
+  NoteVersion,
   PermissionReply,
+  PersistedMessage,
   RepoState,
+  ThreadDoc,
   ThreadEvent,
   ThreadSendArgs
 } from '../shared/types'
@@ -34,6 +38,65 @@ async function readSettings(): Promise<RepoSettings> {
 }
 
 const canvasFileFor = (root: string): string => join(root, '.canvas', 'canvas.json')
+const threadsDirFor = (root: string): string => join(root, '.canvas', 'threads')
+const threadFileFor = (root: string, nodeId: string): string =>
+  join(threadsDirFor(root), `${nodeId}.json`)
+const notesDirFor = (root: string): string => join(root, '.canvas', 'notes')
+const noteFileFor = (root: string, nodeId: string): string =>
+  join(notesDirFor(root), `${nodeId}.md`)
+const noteVersionsFileFor = (root: string, nodeId: string): string =>
+  join(notesDirFor(root), `${nodeId}.versions.json`)
+
+// Node ids come from the renderer over IPC — keep them path-segment safe.
+const isSafeNodeId = (nodeId: string): boolean => /^[\w-]+$/.test(nodeId)
+
+async function readTextIfExists(path: string): Promise<string> {
+  try {
+    return await fs.readFile(path, 'utf8')
+  } catch {
+    return ''
+  }
+}
+
+async function readNoteVersions(root: string, nodeId: string): Promise<NoteVersion[]> {
+  try {
+    const doc: NoteDoc = JSON.parse(await fs.readFile(noteVersionsFileFor(root, nodeId), 'utf8'))
+    return doc.versions
+  } catch {
+    return []
+  }
+}
+
+async function writeNoteVersions(
+  root: string,
+  nodeId: string,
+  versions: NoteVersion[]
+): Promise<void> {
+  await fs.mkdir(notesDirFor(root), { recursive: true })
+  const doc: NoteDoc = { version: 1, versions }
+  await fs.writeFile(noteVersionsFileFor(root, nodeId), JSON.stringify(doc, null, 2))
+}
+
+/**
+ * Version boundary: snapshot the note's live content if it has drifted from
+ * the latest version. Called with 'user' before an AI turn (so unversioned
+ * user edits become their own version) and 'ai' after one.
+ */
+async function snapshotNote(
+  root: string,
+  nodeId: string,
+  author: NoteVersion['author']
+): Promise<NoteVersion[]> {
+  const content = await readTextIfExists(noteFileFor(root, nodeId))
+  const versions = await readNoteVersions(root, nodeId)
+  const last = versions[versions.length - 1]
+  const drifted = last ? last.content !== content : content !== ''
+  if (drifted) {
+    versions.push({ content, author, at: new Date().toISOString() })
+    await writeNoteVersions(root, nodeId, versions)
+  }
+  return versions
+}
 
 async function dirExists(path: string): Promise<boolean> {
   try {
@@ -46,7 +109,8 @@ async function dirExists(path: string): Promise<boolean> {
 async function chatCountFor(root: string): Promise<number> {
   try {
     const doc: CanvasDoc = JSON.parse(await fs.readFile(canvasFileFor(root), 'utf8'))
-    return doc.nodes.filter((n) => n.title || (n.messages?.length ?? 0) > 0).length
+    // A title marks a chat: it's stamped on the first send (and on fork).
+    return doc.nodes.filter((n) => n.title).length
   } catch {
     return 0
   }
@@ -121,9 +185,12 @@ function registerThreadIpc(): void {
     pendingPermissions.get(requestId)?.(allow)
   })
 
+  // File-mutating tools a note session may only point at its own file.
+  const EDIT_TOOLS = new Set(['Edit', 'Write', 'MultiEdit', 'NotebookEdit'])
+
   ipcMain.handle(
     'thread:send',
-    async (event, { nodeId, text, sessionId, forkFrom }: ThreadSendArgs) => {
+    async (event, { nodeId, text, sessionId, forkFrom, kind, noteTitle }: ThreadSendArgs) => {
       const wc = event.sender
       const emit = (payload: ThreadEvent): void => {
         if (!wc.isDestroyed()) wc.send('thread:event', payload)
@@ -135,9 +202,35 @@ function registerThreadIpc(): void {
         return
       }
 
+      const notePath = kind === 'note' && isSafeNodeId(nodeId) ? noteFileFor(root, nodeId) : null
+      if (kind === 'note' && !notePath) {
+        emit({ nodeId, type: 'done', ok: false, error: 'Invalid note id' })
+        return
+      }
+
       try {
+        if (notePath) {
+          // The Edit tool needs a file to edit — make sure it exists.
+          await fs.mkdir(notesDirFor(root), { recursive: true })
+          try {
+            await fs.access(notePath)
+          } catch {
+            await fs.writeFile(notePath, '')
+          }
+          // Unversioned user edits become their own version before the AI touches it.
+          await snapshotNote(root, nodeId, 'user')
+        }
+
+        const prompt = notePath
+          ? `You are connected to the markdown note "${noteTitle || 'Untitled'}" at ${notePath}. ` +
+            `Apply the instruction below by editing that file directly — use the Edit tool ` +
+            `(or Write if the file is empty). Never create or modify any other file. ` +
+            `Keep your text reply to a sentence or two; the edits speak for themselves.` +
+            `\n\nInstruction: ${text}`
+          : text
+
         const turn = query({
-          prompt: text,
+          prompt,
           options: {
             cwd: root,
             resume: forkFrom?.sessionId ?? sessionId,
@@ -147,19 +240,31 @@ function registerThreadIpc(): void {
             ...(forkFrom ? { forkSession: true, resumeSessionAt: forkFrom.messageUuid } : {}),
             systemPrompt: { type: 'preset', preset: 'claude_code' },
             settingSources: ['project'], // required or CLAUDE.md is not loaded
-            permissionMode: 'acceptEdits',
+            // Notes stay in default mode so every edit routes through canUseTool,
+            // where it's checked against the note's own file.
+            permissionMode: notePath ? 'default' : 'acceptEdits',
             includePartialMessages: true,
             // Tools outside acceptEdits' auto-approval (WebSearch, Bash, …) land
             // here. Without this callback the SDK silently auto-denies them.
             canUseTool: async (toolName, input, { signal, title }) => {
+              if (notePath && EDIT_TOOLS.has(toolName)) {
+                const target =
+                  typeof input.file_path === 'string' ? resolve(root, input.file_path) : null
+                return target === resolve(notePath)
+                  ? { behavior: 'allow', updatedInput: input }
+                  : {
+                      behavior: 'deny',
+                      message: `This session may only edit the note file at ${notePath}.`
+                    }
+              }
               const requestId = randomUUID()
-              const allow = await new Promise<boolean>((resolve) => {
+              const allow = await new Promise<boolean>((resolveVerdict) => {
                 if (wc.isDestroyed()) {
-                  resolve(false)
+                  resolveVerdict(false)
                   return
                 }
-                pendingPermissions.set(requestId, resolve)
-                signal.addEventListener('abort', () => resolve(false), { once: true })
+                pendingPermissions.set(requestId, resolveVerdict)
+                signal.addEventListener('abort', () => resolveVerdict(false), { once: true })
                 emit({
                   nodeId,
                   type: 'permission',
@@ -177,10 +282,19 @@ function registerThreadIpc(): void {
 
         // resumeSessionAt anchors on assistant-message uuids — remember the turn's last.
         let lastAssistantUuid: string | undefined
+        // Last note content mirrored to the renderer — only emit real changes.
+        let mirroredNote: string | undefined
 
         for await (const msg of turn) {
           if (msg.type === 'system' && msg.subtype === 'init') {
             emit({ nodeId, type: 'session', sessionId: msg.session_id })
+          } else if (msg.type === 'user' && notePath) {
+            // A tool just returned — if it changed the note, stream the fresh content.
+            const content = await readTextIfExists(notePath)
+            if (content !== mirroredNote) {
+              mirroredNote = content
+              emit({ nodeId, type: 'note-content', content })
+            }
           } else if (msg.type === 'assistant' && msg.parent_tool_use_id === null) {
             lastAssistantUuid = msg.uuid
           } else if (msg.type === 'stream_event') {
@@ -201,6 +315,13 @@ function registerThreadIpc(): void {
                 ` cache_create=${u.cache_creation_input_tokens} out=${u.output_tokens}` +
                 ` cost=$${msg.total_cost_usd.toFixed(4)}`
             )
+            // The turn is the version boundary: however many edits it made, they
+            // land as one snapshot.
+            let note: { content: string; versions: NoteVersion[] } | undefined
+            if (notePath) {
+              const versions = await snapshotNote(root, nodeId, 'ai')
+              note = { content: await readTextIfExists(notePath), versions }
+            }
             emit({
               nodeId,
               type: 'done',
@@ -213,22 +334,94 @@ function registerThreadIpc(): void {
                 cacheCreationTokens: msg.usage.cache_creation_input_tokens,
                 costUsd: msg.total_cost_usd
               },
+              ...(note ? { note } : {}),
               ...(msg.subtype !== 'success' ? { error: msg.subtype } : {})
             })
           }
         }
       } catch (err) {
-        emit({ nodeId, type: 'done', ok: false, error: String(err) })
+        // A turn that died mid-edit may have changed the note — version whatever
+        // landed so nothing is silently lost.
+        let note: { content: string; versions: NoteVersion[] } | undefined
+        if (notePath) {
+          try {
+            const versions = await snapshotNote(root, nodeId, 'ai')
+            note = { content: await readTextIfExists(notePath), versions }
+          } catch {
+            // report the original error regardless
+          }
+        }
+        emit({ nodeId, type: 'done', ok: false, error: String(err), ...(note ? { note } : {}) })
       }
     }
   )
 }
 
+function registerNoteIpc(): void {
+  // Autosave of the live note content (the renderer debounces keystrokes).
+  ipcMain.handle('note:save', async (_event, nodeId: string, content: string): Promise<void> => {
+    if (!repoRoot || !isSafeNodeId(nodeId)) return
+    await fs.mkdir(notesDirFor(repoRoot), { recursive: true })
+    await fs.writeFile(noteFileFor(repoRoot, nodeId), content)
+  })
+
+  // Make an old version the live content again. Unversioned edits are
+  // snapshotted first, so restoring never destroys anything.
+  ipcMain.handle(
+    'note:restore',
+    async (
+      _event,
+      nodeId: string,
+      index: number
+    ): Promise<{ content: string; versions: NoteVersion[] } | null> => {
+      const root = repoRoot
+      if (!root || !isSafeNodeId(nodeId)) return null
+      const versions = await snapshotNote(root, nodeId, 'user')
+      const target = versions[index]
+      if (!target) return null
+      await fs.writeFile(noteFileFor(root, nodeId), target.content)
+      return { content: target.content, versions }
+    }
+  )
+
+  ipcMain.handle('note:delete', async (_event, nodeId: string): Promise<void> => {
+    if (!repoRoot || !isSafeNodeId(nodeId)) return
+    for (const file of [noteFileFor(repoRoot, nodeId), noteVersionsFileFor(repoRoot, nodeId)]) {
+      try {
+        await fs.unlink(file)
+      } catch {
+        // never existed
+      }
+    }
+  })
+}
+
 function registerCanvasIpc(): void {
   ipcMain.handle('canvas:load', async (): Promise<CanvasDoc | null> => {
-    if (!repoRoot) return null
+    const root = repoRoot
+    if (!root) return null
     try {
-      return JSON.parse(await fs.readFile(canvasFileFor(repoRoot), 'utf8'))
+      const doc: CanvasDoc = JSON.parse(await fs.readFile(canvasFileFor(root), 'utf8'))
+      // Transcripts and note contents live one file per node — rejoin them.
+      await Promise.all(
+        doc.nodes.map(async (node) => {
+          if (!isSafeNodeId(node.id)) return
+          if (node.kind === 'note') {
+            node.content = await readTextIfExists(noteFileFor(root, node.id))
+            node.noteVersions = await readNoteVersions(root, node.id)
+            return
+          }
+          try {
+            const thread: ThreadDoc = JSON.parse(
+              await fs.readFile(threadFileFor(root, node.id), 'utf8')
+            )
+            node.messages = thread.messages
+          } catch {
+            // no transcript yet
+          }
+        })
+      )
+      return doc
     } catch {
       return null
     }
@@ -238,7 +431,35 @@ function registerCanvasIpc(): void {
     if (!repoRoot) return
     const dir = join(repoRoot, '.canvas')
     await fs.mkdir(dir, { recursive: true })
-    await fs.writeFile(join(dir, 'canvas.json'), JSON.stringify(doc, null, 2))
+    // Layout/metadata only — transcripts are written via canvas:saveThread.
+    const slim = {
+      ...doc,
+      nodes: doc.nodes.map((node) => {
+        const copy = { ...node }
+        delete copy.messages
+        return copy
+      })
+    }
+    await fs.writeFile(join(dir, 'canvas.json'), JSON.stringify(slim, null, 2))
+  })
+
+  ipcMain.handle(
+    'canvas:saveThread',
+    async (_event, nodeId: string, messages: PersistedMessage[]): Promise<void> => {
+      if (!repoRoot || !isSafeNodeId(nodeId)) return
+      await fs.mkdir(threadsDirFor(repoRoot), { recursive: true })
+      const thread: ThreadDoc = { version: 1, messages }
+      await fs.writeFile(threadFileFor(repoRoot, nodeId), JSON.stringify(thread, null, 2))
+    }
+  )
+
+  ipcMain.handle('canvas:deleteThread', async (_event, nodeId: string): Promise<void> => {
+    if (!repoRoot || !isSafeNodeId(nodeId)) return
+    try {
+      await fs.unlink(threadFileFor(repoRoot, nodeId))
+    } catch {
+      // never had a transcript
+    }
   })
 }
 
@@ -295,6 +516,7 @@ app.whenReady().then(async () => {
   if (settings.current && (await dirExists(settings.current))) repoRoot = settings.current
 
   registerCanvasIpc()
+  registerNoteIpc()
   registerThreadIpc()
   registerRepoIpc()
 

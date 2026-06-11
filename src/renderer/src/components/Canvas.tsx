@@ -10,14 +10,16 @@ import {
 } from '@xyflow/react'
 import '@xyflow/react/dist/style.css'
 import ChatNodeView from './ChatNodeView'
+import NoteNodeView from './NoteNodeView'
 import ForkEdge from './ForkEdge'
 import BeeIcon from './BeeIcon'
 import RepoChip from './RepoChip'
 import DeleteChatModal from './DeleteChatModal'
 import { useCanvasStore, NODE_W } from '../store/canvas'
 import { paletteFor } from '../lib/palette'
+import { useSpawn } from '../lib/useSpawn'
 
-const nodeTypes: NodeTypes = { chat: ChatNodeView }
+const nodeTypes: NodeTypes = { chat: ChatNodeView, note: NoteNodeView }
 const edgeTypes: EdgeTypes = { fork: ForkEdge }
 
 function CanvasInner(): React.JSX.Element {
@@ -26,12 +28,13 @@ function CanvasInner(): React.JSX.Element {
   const loaded = useCanvasStore((s) => s.loaded)
   const repo = useCanvasStore((s) => s.repo)
   const onNodesChange = useCanvasStore((s) => s.onNodesChange)
-  const addNode = useCanvasStore((s) => s.addNode)
   const addNodeAt = useCanvasStore((s) => s.addNodeAt)
+  const addNoteAt = useCanvasStore((s) => s.addNoteAt)
   const setStoreViewport = useCanvasStore((s) => s.setViewport)
   const init = useCanvasStore((s) => s.init)
   const chooseRepo = useCanvasStore((s) => s.chooseRepo)
-  const { setViewport, getViewport, fitView, setCenter, screenToFlowPosition } = useReactFlow()
+  const { setViewport, fitView, screenToFlowPosition } = useReactFlow()
+  const spawn = useSpawn()
 
   useEffect(() => {
     void init().then((vp) => {
@@ -44,45 +47,44 @@ function CanvasInner(): React.JSX.Element {
     if (vp) void setViewport(vp)
   }, [chooseRepo, setViewport])
 
-  // ⌘N: spawn a chat at a free spot near the view, then center the camera on it —
-  // the empty composer autofocuses, so it's type-ready as soon as it lands.
-  const handleNewChat = useCallback(() => {
-    if (!useCanvasStore.getState().repo?.current) return
-    const vp = getViewport()
-    const node = addNode({
-      x: -vp.x / vp.zoom,
-      y: -vp.y / vp.zoom,
-      w: window.innerWidth / vp.zoom,
-      h: window.innerHeight / vp.zoom
-    })
-    // If zoomed way out, come in to a readable zoom; otherwise stay put.
-    const zoom = Math.max(vp.zoom, 1)
-    void setCenter(node.position.x + NODE_W / 2, node.position.y + 150, { zoom, duration: 250 })
-  }, [addNode, getViewport, setCenter])
-
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent): void => {
-      if (!(e.metaKey || e.ctrlKey)) return
-      if (e.key === '0') {
+      if (e.metaKey || e.ctrlKey) {
+        if (e.key === '0') {
+          e.preventDefault()
+          void fitView({ padding: 0.1, duration: 250 })
+        } else if (e.key === 'n' || e.key === 'N') {
+          e.preventDefault()
+          spawn(e.shiftKey ? 'note' : 'chat')
+        }
+        return
+      }
+      // Bare C / N spawn a chat / note — but only when typing focus is
+      // elsewhere, so the letters still work inside inputs and notes.
+      if (e.altKey || e.repeat) return
+      const t = e.target as HTMLElement
+      if (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable) return
+      const key = e.key.toLowerCase()
+      if (key === 'c' || key === 'n') {
         e.preventDefault()
-        void fitView({ padding: 0.1, duration: 250 })
-      } else if (e.key === 'n' || e.key === 'N') {
-        e.preventDefault()
-        handleNewChat()
+        spawn(key === 'n' ? 'note' : 'chat')
       }
     }
     window.addEventListener('keydown', onKeyDown)
     return () => window.removeEventListener('keydown', onKeyDown)
-  }, [fitView, handleNewChat])
+  }, [fitView, spawn])
 
-  // Double-click on empty canvas: spawn a chat right there, under the cursor.
+  // Double-click on empty canvas: spawn a chat right there, under the cursor
+  // (a note with alt/option held).
   const handleDoubleClick = useCallback(
     (e: React.MouseEvent) => {
       if (!(e.target as HTMLElement).classList.contains('react-flow__pane')) return
       const p = screenToFlowPosition({ x: e.clientX, y: e.clientY })
-      addNodeAt({ x: p.x - NODE_W / 2, y: p.y - 24 })
+      const position = { x: p.x - NODE_W / 2, y: p.y - 24 }
+      if (e.altKey) addNoteAt(position)
+      else addNodeAt(position)
     },
-    [addNodeAt, screenToFlowPosition]
+    [addNodeAt, addNoteAt, screenToFlowPosition]
   )
 
   return (

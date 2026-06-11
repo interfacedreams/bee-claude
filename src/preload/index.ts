@@ -2,7 +2,9 @@ import { contextBridge, ipcRenderer } from 'electron'
 import { electronAPI } from '@electron-toolkit/preload'
 import type {
   CanvasDoc,
+  NoteVersion,
   PermissionReply,
+  PersistedMessage,
   RepoState,
   ThreadEvent,
   ThreadSendArgs
@@ -17,7 +19,21 @@ const api = {
   },
   canvas: {
     load: (): Promise<CanvasDoc | null> => ipcRenderer.invoke('canvas:load'),
-    save: (doc: CanvasDoc): Promise<void> => ipcRenderer.invoke('canvas:save', doc)
+    save: (doc: CanvasDoc): Promise<void> => ipcRenderer.invoke('canvas:save', doc),
+    saveThread: (nodeId: string, messages: PersistedMessage[]): Promise<void> =>
+      ipcRenderer.invoke('canvas:saveThread', nodeId, messages),
+    deleteThread: (nodeId: string): Promise<void> =>
+      ipcRenderer.invoke('canvas:deleteThread', nodeId)
+  },
+  note: {
+    save: (nodeId: string, content: string): Promise<void> =>
+      ipcRenderer.invoke('note:save', nodeId, content),
+    restore: (
+      nodeId: string,
+      index: number
+    ): Promise<{ content: string; versions: NoteVersion[] } | null> =>
+      ipcRenderer.invoke('note:restore', nodeId, index),
+    delete: (nodeId: string): Promise<void> => ipcRenderer.invoke('note:delete', nodeId)
   },
   thread: {
     send: (args: ThreadSendArgs): Promise<void> => ipcRenderer.invoke('thread:send', args),

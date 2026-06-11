@@ -2,11 +2,20 @@ import { useState } from 'react'
 import { useReactFlow, type Viewport } from '@xyflow/react'
 import { ChevronDown, Folder } from 'lucide-react'
 import { useCanvasStore } from '../store/canvas'
+import { useSpawn } from '../lib/useSpawn'
+
+// New chat / new note buttons that sit beneath the repo chip: a written-out
+// label plus a keycap badge showing the bare-letter shortcut.
+const SPAWN_BUTTON =
+  'flex cursor-pointer items-center gap-2 rounded-[14px] border border-[#EDD27E] bg-[#FEF3C7] px-3 py-1.5 text-[13px] font-medium text-[#92690B] shadow-lg transition-colors hover:bg-[#FDE68A] active:scale-95'
+const KEYCAP =
+  'flex h-5 min-w-5 items-center justify-center rounded-[5px] border border-[#EDD27E] bg-white/70 px-1 text-[11px] font-semibold shadow-[0_1.5px_0_#EDD27E]'
 
 /**
  * Current-repo indicator (top right) with a dropdown of recent repos —
  * any repo you've chatted in is one click away. Switching repos swaps
  * the whole canvas, so it's blocked while a reply is streaming.
+ * New-chat / new-note buttons live just beneath it.
  */
 export default function RepoChip(): React.JSX.Element | null {
   const repo = useCanvasStore((s) => s.repo)
@@ -15,6 +24,7 @@ export default function RepoChip(): React.JSX.Element | null {
   const anyStreaming = useCanvasStore((s) => s.nodes.some((n) => n.data.status === 'streaming'))
   const [open, setOpen] = useState(false)
   const { setViewport } = useReactFlow()
+  const spawn = useSpawn()
 
   if (!repo) return null // repo state not fetched yet
 
@@ -46,8 +56,25 @@ export default function RepoChip(): React.JSX.Element | null {
       </button>
 
       {repo.current && !open && (
-        <div className="pointer-events-none mt-1.5 text-center text-[11px] font-medium text-neutral-600 select-none">
-          ⌘N new chat
+        <div className="mt-2 flex flex-col items-end gap-2">
+          <button
+            type="button"
+            onClick={() => spawn('chat')}
+            title="New chat (C)"
+            className={SPAWN_BUTTON}
+          >
+            <span>New Chat</span>
+            <span className={KEYCAP}>C</span>
+          </button>
+          <button
+            type="button"
+            onClick={() => spawn('note')}
+            title="New note (N)"
+            className={SPAWN_BUTTON}
+          >
+            <span>New Note</span>
+            <span className={KEYCAP}>N</span>
+          </button>
         </div>
       )}
 

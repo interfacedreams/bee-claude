@@ -3,6 +3,7 @@ import { applyNodeChanges, type Node, type NodeChange, type Viewport } from '@xy
 import type {
   CanvasDoc,
   ForkRef,
+  NoteVersion,
   PermissionRequest,
   PersistedEdge,
   PersistedMessage,
@@ -48,7 +49,31 @@ export interface ChatData {
   [key: string]: unknown
 }
 
+export interface NoteData {
+  title: string
+  color?: string
+  content: string // live markdown, mirror of .canvas/notes/<id>.md
+  versions: NoteVersion[]
+  viewVersion?: number // runtime: index of the version being viewed; undefined = live
+  status: 'idle' | 'streaming'
+  draft: string // the AI-instruction composer
+  lastReply?: string // the AI's brief commentary from its latest editing turn
+  minimized: boolean
+  savedHeight?: number
+  growthCap?: number
+  sessionId?: string
+  focusDraft?: boolean // autofocus the content editor when the node mounts
+  lastUsage?: TurnUsage
+  pendingPermission?: PermissionRequest
+  [key: string]: unknown
+}
+
 export type ChatNode = Node<ChatData, 'chat'>
+export type NoteNode = Node<NoteData, 'note'>
+export type CanvasNode = ChatNode | NoteNode
+
+export const isChat = (n: CanvasNode): n is ChatNode => n.type === 'chat'
+export const isNote = (n: CanvasNode): n is NoteNode => n.type === 'note'
 
 interface Rect {
   x: number
@@ -70,7 +95,26 @@ function makeNode(position: { x: number; y: number }, partial?: Partial<ChatData
   }
 }
 
-function boxOf(n: ChatNode): Rect {
+function makeNoteNode(position: { x: number; y: number }, partial?: Partial<NoteData>): NoteNode {
+  return {
+    id: uid(),
+    type: 'note',
+    position,
+    width: NODE_W,
+    dragHandle: '.drag-handle',
+    data: {
+      title: '',
+      content: '',
+      versions: [],
+      status: 'idle',
+      draft: '',
+      minimized: false,
+      ...partial
+    }
+  }
+}
+
+function boxOf(n: CanvasNode): Rect {
   return {
     x: n.position.x,
     y: n.position.y,
@@ -92,7 +136,7 @@ function tooClose(a: Rect, b: Rect): boolean {
  * Nearest free spot in/near the viewport: to the right of (or below) existing
  * visible nodes, never overlapping, GAP clearance. Viewport center if empty.
  */
-function findFreeSpot(nodes: ChatNode[], view: Rect): { x: number; y: number } {
+function findFreeSpot(nodes: CanvasNode[], view: Rect): { x: number; y: number } {
   const boxes = nodes.map(boxOf)
   if (boxes.length === 0) {
     return {
@@ -142,11 +186,24 @@ export function forkSubtree(edges: PersistedEdge[], rootId: string): Set<string>
   return ids
 }
 
-/** Forks land to the right of their parent, stacking downward when occupied. */
-function findForkSpot(nodes: ChatNode[], parent: ChatNode): { x: number; y: number } {
+/**
+ * Forks land to the right of their parent, stacking downward when occupied.
+ * Forks sharing an anchor message queue up: each new one starts just beneath
+ * the bottom-most existing sibling.
+ */
+function findForkSpot(
+  nodes: CanvasNode[],
+  parent: ChatNode,
+  siblings: CanvasNode[]
+): { x: number; y: number } {
   const boxes = nodes.map(boxOf)
   const p = boxOf(parent)
   const spot = { x: p.x + p.w + GAP, y: p.y }
+  if (siblings.length > 0) {
+    const lowest = siblings.map(boxOf).reduce((a, b) => (b.y + b.h > a.y + a.h ? b : a))
+    spot.x = lowest.x
+    spot.y = lowest.y + lowest.h + GAP
+  }
   while (boxes.some((b) => tooClose({ ...spot, w: NODE_W, h: EST_NODE_H }, b))) {
     spot.y += EST_NODE_H + GAP
   }
@@ -154,7 +211,7 @@ function findForkSpot(nodes: ChatNode[], parent: ChatNode): { x: number; y: numb
 }
 
 interface CanvasState {
-  nodes: ChatNode[]
+  nodes: CanvasNode[]
   edges: PersistedEdge[]
   viewport: Viewport
   loaded: boolean
@@ -164,7 +221,7 @@ interface CanvasState {
   // fork edges can attach to the message itself rather than the node center.
   anchorOffsets: Record<string, Record<string, number>>
   setAnchorOffsets: (nodeId: string, offsets: Record<string, number>) => void
-  // Runtime-only: chat awaiting delete confirmation (the modal is open for it).
+  // Runtime-only: node awaiting delete confirmation (the modal is open for it).
   pendingDeleteId: string | null
   requestDelete: (id: string) => void
   cancelDelete: () => void
@@ -172,28 +229,40 @@ interface CanvasState {
   init: () => Promise<Viewport | null>
   chooseRepo: () => Promise<Viewport | null>
   selectRepo: (path: string) => Promise<Viewport | null>
-  onNodesChange: (changes: NodeChange<ChatNode>[]) => void
+  onNodesChange: (changes: NodeChange<CanvasNode>[]) => void
   setViewport: (vp: Viewport) => void
   addNode: (view: Rect) => ChatNode
   addNodeAt: (position: { x: number; y: number }) => ChatNode
+  addNote: (view: Rect) => NoteNode
+  addNoteAt: (position: { x: number; y: number }) => NoteNode
   clearFocusDraft: (id: string) => void
   setDraft: (id: string, draft: string) => void
   setColor: (id: string, color: string) => void
+  setTitle: (id: string, title: string) => void
+  setNoteContent: (id: string, content: string) => void
+  setViewVersion: (id: string, index: number | undefined) => void
+  restoreVersion: (id: string, index: number) => Promise<void>
   send: (id: string) => void
+  sendNote: (id: string) => Promise<void>
   respondPermission: (id: string, requestId: string, allow: boolean) => void
-  forkChat: (nodeId: string) => void
+  forkChat: (nodeId: string) => string | null
   discardNode: (id: string) => void
   toggleMinimize: (id: string) => void
   load: () => Promise<Viewport | null>
   persistSoon: () => void
+  persistThread: (id: string) => void
 }
 
 let saveTimer: ReturnType<typeof setTimeout> | undefined
+// Debounced per-note autosave of live content (keystrokes → .canvas/notes/<id>.md).
+const noteSaveTimers = new Map<string, ReturnType<typeof setTimeout>>()
 
 export const useCanvasStore = create<CanvasState>((set, get) => {
-  const patchData = (id: string, patch: Partial<ChatData>): void => {
+  const patchData = (id: string, patch: Record<string, unknown>): void => {
     set((s) => ({
-      nodes: s.nodes.map((n) => (n.id === id ? { ...n, data: { ...n.data, ...patch } } : n))
+      nodes: s.nodes.map((n) =>
+        n.id === id ? ({ ...n, data: { ...n.data, ...patch } } as CanvasNode) : n
+      )
     }))
   }
 
@@ -205,15 +274,15 @@ export const useCanvasStore = create<CanvasState>((set, get) => {
         const height = n.data.minimized ? n.data.savedHeight : n.height
         return {
           id: n.id,
+          ...(isNote(n) ? { kind: 'note' as const } : {}),
           position: n.position,
           width: n.width ?? NODE_W,
           ...(height != null ? { height } : {}),
           title: n.data.title,
           ...(n.data.color ? { color: n.data.color } : {}),
-          ...(n.data.messages.length > 0 ? { messages: n.data.messages } : {}),
           ...(n.data.minimized ? { minimized: true } : {}),
           ...(n.data.sessionId ? { sessionId: n.data.sessionId } : {}),
-          ...(n.data.forkOf ? { forkOf: n.data.forkOf } : {})
+          ...(isChat(n) && n.data.forkOf ? { forkOf: n.data.forkOf } : {})
         }
       }),
       edges,
@@ -230,9 +299,36 @@ export const useCanvasStore = create<CanvasState>((set, get) => {
     }, 500)
   }
 
+  // Transcripts persist one file per node, written when a turn's messages
+  // settle (user send, turn done) rather than on the debounced layout save.
+  const persistThread = (id: string): void => {
+    const node = get().nodes.find((n) => n.id === id)
+    if (!node || !isChat(node)) return
+    // Skip the still-empty assistant placeholder so a reload mid-turn
+    // doesn't render a blank bubble.
+    const messages = node.data.messages.filter((m) => m.role !== 'assistant' || m.text !== '')
+    void window.api.canvas.saveThread(id, messages)
+  }
+
+  // Push a note's pending autosave through now — before an AI turn reads the
+  // file from disk, and before switching repos.
+  const flushNoteSave = async (id: string): Promise<void> => {
+    const timer = noteSaveTimers.get(id)
+    if (!timer) return
+    clearTimeout(timer)
+    noteSaveTimers.delete(id)
+    const node = get().nodes.find((n) => n.id === id)
+    if (node && isNote(node)) await window.api.note.save(id, node.data.content)
+  }
+
+  const flushNoteSaves = async (): Promise<void> => {
+    await Promise.all([...noteSaveTimers.keys()].map(flushNoteSave))
+  }
+
   // A debounced save writes to whichever repo is current in the main process —
   // flush it before switching so it can't land in the next repo's canvas.
   const flushSave = async (): Promise<void> => {
+    await flushNoteSaves()
     if (saveTimer === undefined) return
     clearTimeout(saveTimer)
     saveTimer = undefined
@@ -252,18 +348,28 @@ export const useCanvasStore = create<CanvasState>((set, get) => {
 
   const anyStreaming = (): boolean => get().nodes.some((n) => n.data.status === 'streaming')
 
-  // A fresh chat takes over both kinds of focus: it becomes the selected node
-  // (everything else deselects) and focusDraft moves the keyboard into its composer.
-  const spawnNode = (position: { x: number; y: number }): ChatNode => {
-    // Cycle the post-it palette: each fresh chat takes the color after the
-    // most recently created node's (the first chat on a canvas gets butter).
-    const prev = get().nodes[get().nodes.length - 1]
-    const color = nextColorId(prev?.data.color)
-    const node = { ...makeNode(position, { focusDraft: true, color }), selected: true }
+  // A fresh node takes over both kinds of focus: it becomes the selected node
+  // (everything else deselects) and focusDraft moves the keyboard into it.
+  const adopt = <T extends CanvasNode>(node: T): T => {
+    const selected = { ...node, selected: true }
     set((s) => ({
-      nodes: [...s.nodes.map((n) => (n.selected ? { ...n, selected: false } : n)), node]
+      nodes: [...s.nodes.map((n) => (n.selected ? { ...n, selected: false } : n)), selected]
     }))
     persist()
+    return selected
+  }
+
+  // Cycle the post-it palette: each fresh node takes the color after the
+  // most recently created node's (the first one on a canvas gets butter).
+  const nextColor = (): string => nextColorId(get().nodes[get().nodes.length - 1]?.data.color)
+
+  const spawnNode = (position: { x: number; y: number }): ChatNode =>
+    adopt(makeNode(position, { focusDraft: true, color: nextColor() }))
+
+  const spawnNote = (position: { x: number; y: number }): NoteNode => {
+    const node = adopt(makeNoteNode(position, { focusDraft: true, color: nextColor() }))
+    // The note's file exists from the moment the node does.
+    void window.api.note.save(node.id, '')
     return node
   }
 
@@ -281,14 +387,18 @@ export const useCanvasStore = create<CanvasState>((set, get) => {
     cancelDelete: () => set({ pendingDeleteId: null }),
 
     deleteChat: (id, cascade) => {
-      set((s) => {
-        const doomed = cascade ? forkSubtree(s.edges, id) : new Set([id])
-        return {
-          pendingDeleteId: null,
-          nodes: s.nodes.filter((n) => !doomed.has(n.id)),
-          edges: s.edges.filter((e) => !doomed.has(e.source) && !doomed.has(e.target))
-        }
-      })
+      const byId = new Map(get().nodes.map((n) => [n.id, n]))
+      const doomed = cascade ? forkSubtree(get().edges, id) : new Set([id])
+      set((s) => ({
+        pendingDeleteId: null,
+        nodes: s.nodes.filter((n) => !doomed.has(n.id)),
+        edges: s.edges.filter((e) => !doomed.has(e.source) && !doomed.has(e.target))
+      }))
+      for (const nodeId of doomed) {
+        const node = byId.get(nodeId)
+        if (node && isNote(node)) void window.api.note.delete(nodeId)
+        else void window.api.canvas.deleteThread(nodeId)
+      }
       persist()
     },
 
@@ -325,6 +435,8 @@ export const useCanvasStore = create<CanvasState>((set, get) => {
 
     persistSoon: persist,
 
+    persistThread,
+
     onNodesChange: (changes) => {
       set((s) => ({ nodes: applyNodeChanges(changes, s.nodes) }))
       persist()
@@ -339,6 +451,10 @@ export const useCanvasStore = create<CanvasState>((set, get) => {
 
     addNodeAt: (position) => spawnNode(position),
 
+    addNote: (view) => spawnNote(findFreeSpot(get().nodes, view)),
+
+    addNoteAt: (position) => spawnNote(position),
+
     clearFocusDraft: (id) => patchData(id, { focusDraft: undefined }),
 
     setDraft: (id, draft) => patchData(id, { draft }),
@@ -346,6 +462,44 @@ export const useCanvasStore = create<CanvasState>((set, get) => {
     setColor: (id, color) => {
       patchData(id, { color })
       persist()
+    },
+
+    setTitle: (id, title) => {
+      patchData(id, { title })
+      persist()
+    },
+
+    setNoteContent: (id, content) => {
+      // Notes grow with their content the way chats grow with replies:
+      // editing releases any fixed height and caps growth to the screen.
+      const growthCap = viewportFitHeight(get().viewport.zoom)
+      set((s) => ({
+        nodes: s.nodes.map((n) =>
+          n.id === id
+            ? ({ ...n, height: undefined, data: { ...n.data, content, growthCap } } as CanvasNode)
+            : n
+        )
+      }))
+      const timer = noteSaveTimers.get(id)
+      if (timer) clearTimeout(timer)
+      noteSaveTimers.set(
+        id,
+        setTimeout(() => {
+          noteSaveTimers.delete(id)
+          void window.api.note.save(id, content)
+        }, 600)
+      )
+    },
+
+    setViewVersion: (id, index) => patchData(id, { viewVersion: index }),
+
+    restoreVersion: async (id, index) => {
+      const node = get().nodes.find((n) => n.id === id)
+      if (!node || !isNote(node) || node.data.status === 'streaming') return
+      await flushNoteSave(id)
+      const res = await window.api.note.restore(id, index)
+      if (res)
+        patchData(id, { content: res.content, versions: res.versions, viewVersion: undefined })
     },
 
     respondPermission: (id, requestId, allow) => {
@@ -358,7 +512,7 @@ export const useCanvasStore = create<CanvasState>((set, get) => {
 
     forkChat: (nodeId) => {
       const parent = get().nodes.find((n) => n.id === nodeId)
-      if (!parent || parent.data.status === 'streaming') return
+      if (!parent || !isChat(parent) || parent.data.status === 'streaming') return null
       // Fork-ahead only: the anchor is always the chat's tip — its latest
       // assistant reply. Forking again later anchors on the new tip, and
       // several forks of the same tip simply share an anchor message.
@@ -366,11 +520,19 @@ export const useCanvasStore = create<CanvasState>((set, get) => {
         .reverse()
         .find((m) => m.role === 'assistant' && m.uuid)
       const sessionId = parent.data.sessionId
-      if (!anchor?.uuid || !sessionId) return
+      if (!anchor?.uuid || !sessionId) return null
+
+      // Existing forks of this same anchor — the new one slots in beneath them.
+      const siblingIds = new Set(
+        get()
+          .edges.filter((e) => e.source === parent.id && e.sourceMessageId === anchor.id)
+          .map((e) => e.target)
+      )
+      const siblings = get().nodes.filter((n) => siblingIds.has(n.id))
 
       // The forked session carries the parent's context up to the anchor —
       // the node's transcript starts clean and shows only what diverges.
-      const node = makeNode(findForkSpot(get().nodes, parent), {
+      const node = makeNode(findForkSpot(get().nodes, parent, siblings), {
         title: `${parent.data.title} ⑂`.trim(),
         color: parent.data.color, // forks stay in the parent's color family
         status: 'idle',
@@ -386,13 +548,17 @@ export const useCanvasStore = create<CanvasState>((set, get) => {
       }
       set((s) => ({ nodes: [...s.nodes, node], edges: [...s.edges, edge] }))
       persist()
+      return node.id
     },
 
     discardNode: (id) => {
+      const node = get().nodes.find((n) => n.id === id)
       set((s) => ({
         nodes: s.nodes.filter((n) => n.id !== id),
         edges: s.edges.filter((e) => e.source !== id && e.target !== id)
       }))
+      if (node && isNote(node)) void window.api.note.delete(id)
+      else void window.api.canvas.deleteThread(id)
       persist()
     },
 
@@ -406,14 +572,14 @@ export const useCanvasStore = create<CanvasState>((set, get) => {
               ...n,
               height: n.data.savedHeight,
               data: { ...n.data, minimized: false, savedHeight: undefined }
-            }
+            } as CanvasNode
           }
           // minimize: drop the explicit height so the node collapses to the title row
           return {
             ...n,
             height: undefined,
             data: { ...n.data, minimized: true, savedHeight: n.height }
-          }
+          } as CanvasNode
         })
       }))
       persist()
@@ -421,7 +587,7 @@ export const useCanvasStore = create<CanvasState>((set, get) => {
 
     send: (id) => {
       const node = get().nodes.find((n) => n.id === id)
-      if (!node || node.data.status === 'streaming') return
+      if (!node || !isChat(node) || node.data.status === 'streaming') return
       const text = node.data.draft.trim()
       if (!text) return
 
@@ -433,7 +599,7 @@ export const useCanvasStore = create<CanvasState>((set, get) => {
       set((s) => ({
         nodes: s.nodes.map((n) =>
           n.id === id
-            ? {
+            ? ({
                 ...n,
                 // release any fixed height so the node grows with the reply (up to the cap)
                 height: undefined,
@@ -445,11 +611,12 @@ export const useCanvasStore = create<CanvasState>((set, get) => {
                   growthCap,
                   title: node.data.title || text.slice(0, 60)
                 }
-              }
+              } as CanvasNode)
             : n
         )
       }))
       persist() // title may have changed
+      persistThread(id) // the user message is part of the durable transcript now
 
       void window.api.thread.send({
         nodeId: id,
@@ -457,6 +624,43 @@ export const useCanvasStore = create<CanvasState>((set, get) => {
         sessionId: node.data.sessionId,
         // first send of a forked node: fork the parent session at the anchor
         ...(!node.data.sessionId && node.data.forkOf ? { forkFrom: node.data.forkOf } : {})
+      })
+    },
+
+    sendNote: async (id) => {
+      const node = get().nodes.find((n) => n.id === id)
+      if (!node || !isNote(node) || node.data.status === 'streaming') return
+      const text = node.data.draft.trim()
+      if (!text) return
+
+      const growthCap = viewportFitHeight(get().viewport.zoom)
+      set((s) => ({
+        nodes: s.nodes.map((n) =>
+          n.id === id
+            ? ({
+                ...n,
+                // release any fixed height so the note grows with the AI's edits
+                height: undefined,
+                data: {
+                  ...n.data,
+                  draft: '',
+                  status: 'streaming' as const,
+                  lastReply: '',
+                  viewVersion: undefined, // an editing turn always lands on the live content
+                  growthCap
+                }
+              } as CanvasNode)
+            : n
+        )
+      }))
+      // The agent reads the note from disk — the latest keystrokes must be there.
+      await flushNoteSave(id)
+      void window.api.thread.send({
+        nodeId: id,
+        text,
+        sessionId: node.data.sessionId,
+        kind: 'note',
+        noteTitle: node.data.title
       })
     },
 
@@ -472,22 +676,44 @@ export const useCanvasStore = create<CanvasState>((set, get) => {
         loaded: true,
         viewport: doc.viewport,
         edges: doc.edges ?? [],
-        nodes: doc.nodes.map((p) => ({
-          ...makeNode(p.position, {
-            title: p.title,
-            color: p.color,
-            messages: p.messages ?? [],
-            status: p.title || (p.messages?.length ?? 0) > 0 ? 'idle' : 'empty',
-            minimized: p.minimized ?? false,
-            savedHeight: p.minimized && p.height != null ? Math.min(p.height, cap) : undefined,
-            growthCap: cap,
-            sessionId: p.sessionId,
-            forkOf: p.forkOf
-          }),
-          id: p.id,
-          width: p.width,
-          ...(p.height != null && !p.minimized ? { height: Math.min(p.height, cap) } : {})
-        }))
+        nodes: doc.nodes.map((p) => {
+          const frame = {
+            id: p.id,
+            width: p.width,
+            ...(p.height != null && !p.minimized ? { height: Math.min(p.height, cap) } : {})
+          }
+          const savedHeight = p.minimized && p.height != null ? Math.min(p.height, cap) : undefined
+          if (p.kind === 'note') {
+            return {
+              ...makeNoteNode(p.position, {
+                title: p.title,
+                color: p.color,
+                content: p.content ?? '',
+                versions: p.noteVersions ?? [],
+                status: 'idle',
+                minimized: p.minimized ?? false,
+                savedHeight,
+                growthCap: cap,
+                sessionId: p.sessionId
+              }),
+              ...frame
+            }
+          }
+          return {
+            ...makeNode(p.position, {
+              title: p.title,
+              color: p.color,
+              messages: p.messages ?? [],
+              status: p.title || (p.messages?.length ?? 0) > 0 ? 'idle' : 'empty',
+              minimized: p.minimized ?? false,
+              savedHeight,
+              growthCap: cap,
+              sessionId: p.sessionId,
+              forkOf: p.forkOf
+            }),
+            ...frame
+          }
+        })
       })
       return doc.viewport
     }
@@ -498,9 +724,11 @@ export const useCanvasStore = create<CanvasState>((set, get) => {
 // nodes streaming concurrently). Registered once at module load.
 window.api.thread.onEvent((event) => {
   const { setState } = useCanvasStore
-  const patch = (id: string, fn: (data: ChatData) => Partial<ChatData>): void => {
+  const patch = (id: string, fn: (node: CanvasNode) => Record<string, unknown>): void => {
     setState((s) => ({
-      nodes: s.nodes.map((n) => (n.id === id ? { ...n, data: { ...n.data, ...fn(n.data) } } : n))
+      nodes: s.nodes.map((n) =>
+        n.id === id ? ({ ...n, data: { ...n.data, ...fn(n) } } as CanvasNode) : n
+      )
     }))
   }
 
@@ -509,23 +737,39 @@ window.api.thread.onEvent((event) => {
     patch(event.nodeId, () => ({ sessionId: event.sessionId, forkOf: undefined }))
     useCanvasStore.getState().persistSoon()
   } else if (event.type === 'delta' && event.text) {
-    patch(event.nodeId, (data) => {
-      const last = data.messages[data.messages.length - 1]
+    patch(event.nodeId, (node) => {
+      // Note turns route the assistant's commentary into the reply strip.
+      if (isNote(node)) return { lastReply: (node.data.lastReply ?? '') + event.text }
+      const last = node.data.messages[node.data.messages.length - 1]
       if (!last || last.role !== 'assistant') return {}
       return {
-        messages: [...data.messages.slice(0, -1), { ...last, text: last.text + event.text }]
+        messages: [...node.data.messages.slice(0, -1), { ...last, text: last.text + event.text }]
       }
     })
+  } else if (event.type === 'note-content') {
+    patch(event.nodeId, (node) => (isNote(node) ? { content: event.content } : {}))
   } else if (event.type === 'permission') {
     patch(event.nodeId, () => ({ pendingPermission: event.request }))
   } else if (event.type === 'permission-resolved') {
-    patch(event.nodeId, (data) =>
-      data.pendingPermission?.requestId === event.requestId ? { pendingPermission: undefined } : {}
+    patch(event.nodeId, (node) =>
+      node.data.pendingPermission?.requestId === event.requestId
+        ? { pendingPermission: undefined }
+        : {}
     )
   } else if (event.type === 'done') {
-    patch(event.nodeId, (data) => {
-      const last = data.messages[data.messages.length - 1]
-      const note = event.ok === false ? `\n\n⚠️ ${event.error ?? 'The agent run failed.'}` : ''
+    patch(event.nodeId, (node) => {
+      const warning = event.ok === false ? `\n\n⚠️ ${event.error ?? 'The agent run failed.'}` : ''
+      if (isNote(node)) {
+        return {
+          status: 'idle',
+          pendingPermission: undefined,
+          ...(event.usage ? { lastUsage: event.usage } : {}),
+          // adopt the turn's settled content + version history
+          ...(event.note ? { content: event.note.content, versions: event.note.versions } : {}),
+          ...(warning ? { lastReply: (node.data.lastReply ?? '') + warning } : {})
+        }
+      }
+      const last = node.data.messages[node.data.messages.length - 1]
       return {
         status: 'idle',
         pendingPermission: undefined, // safety net if the turn dies mid-prompt
@@ -533,17 +777,17 @@ window.api.thread.onEvent((event) => {
         messages:
           last && last.role === 'assistant'
             ? [
-                ...data.messages.slice(0, -1),
+                ...node.data.messages.slice(0, -1),
                 // stamp the SDK uuid — it's the anchor that makes this message forkable
                 {
                   ...last,
-                  text: last.text + note,
+                  text: last.text + warning,
                   ...(event.messageUuid ? { uuid: event.messageUuid } : {})
                 }
               ]
-            : data.messages
+            : node.data.messages
       }
     })
-    useCanvasStore.getState().persistSoon()
+    useCanvasStore.getState().persistThread(event.nodeId)
   }
 })

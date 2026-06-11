@@ -1,4 +1,4 @@
-import { memo, useCallback, useEffect, useRef } from 'react'
+import { memo, useCallback, useEffect, useRef, useState } from 'react'
 import {
   Handle,
   NodeResizeControl,
@@ -10,11 +10,13 @@ import {
 } from '@xyflow/react'
 import TextareaAutosize from 'react-textarea-autosize'
 import Markdown from 'react-markdown'
-import { Expand, GitFork, Minus, ShieldQuestion, Trash2 } from 'lucide-react'
-import type { PermissionRequest } from '../../../shared/types'
+import { Expand, GitFork, Minus, Pencil, Trash2 } from 'lucide-react'
 import { useCanvasStore, MAX_NODE_H, type ChatNode, type Message } from '../store/canvas'
 import { paletteFor } from '../lib/palette'
+import { useForwardedWheel } from '../lib/useForwardedWheel'
+import { CHIP_BUTTON, DRAG_HEADER, HIDDEN_HANDLE } from '../lib/nodeChrome'
 import BeeIcon from './BeeIcon'
+import PermissionPrompt from './PermissionPrompt'
 
 function MessageView({
   message,
@@ -50,71 +52,9 @@ function MessageView({
   )
 }
 
-/** The most telling detail of a tool input — the query/command/url, not raw JSON. */
-function permissionDetail(input: Record<string, unknown>): string {
-  const detail = input.query ?? input.command ?? input.url ?? input.file_path ?? input.prompt
-  const text = typeof detail === 'string' ? detail : JSON.stringify(input)
-  return text.length > 200 ? `${text.slice(0, 200)}…` : text
-}
-
-function PermissionPrompt({
-  request,
-  onRespond
-}: {
-  request: PermissionRequest
-  onRespond: (allow: boolean) => void
-}): React.JSX.Element {
-  const detail = permissionDetail(request.input)
-  return (
-    <div className="nodrag mx-1 mt-2 shrink-0 cursor-auto rounded-[10px] border border-(--np-edge) bg-white/85 px-3 py-2 text-[14px]">
-      <div className="flex items-center gap-2 font-medium text-neutral-800">
-        <ShieldQuestion className="h-4 w-4 shrink-0 text-(--np-deep)" />
-        <span className="min-w-0 break-words">{request.title ?? `Allow ${request.toolName}?`}</span>
-      </div>
-      {detail && detail !== '{}' && (
-        <div className="mt-1 line-clamp-3 font-mono text-[12px] break-all text-neutral-500">
-          {detail}
-        </div>
-      )}
-      <div className="mt-2 flex justify-end gap-2">
-        <button
-          type="button"
-          onClick={() => onRespond(false)}
-          className="cursor-pointer rounded-md px-3 py-1 text-neutral-500 transition-colors hover:bg-neutral-100"
-        >
-          Deny
-        </button>
-        <button
-          type="button"
-          onClick={() => onRespond(true)}
-          className="cursor-pointer rounded-md bg-(--np-accent) px-3 py-1 font-medium text-white transition-colors hover:opacity-85"
-        >
-          Allow
-        </button>
-      </div>
-    </div>
-  )
-}
-
-// Every header chip button (minimize/expand/fork/delete) shares this shape:
-// rounded square, icon centered, palette chip fill that darkens to accent on hover.
-const CHIP_BUTTON =
-  'nodrag flex h-5 w-5 shrink-0 cursor-pointer items-center justify-center rounded-md bg-(--np-chip) text-(--np-deep) transition-colors hover:bg-(--np-accent)'
-
-// React Flow's default handle is a visible 6px dot — these are layout anchors only.
-const HIDDEN_HANDLE: React.CSSProperties = {
-  opacity: 0,
-  pointerEvents: 'none',
-  width: 1,
-  height: 1,
-  minWidth: 0,
-  minHeight: 0,
-  border: 'none',
-  background: 'transparent'
-}
-
 function ChatNodeView({ id, data, selected }: NodeProps<ChatNode>): React.JSX.Element {
   const setDraft = useCanvasStore((s) => s.setDraft)
+  const setTitle = useCanvasStore((s) => s.setTitle)
   const send = useCanvasStore((s) => s.send)
   const respondPermission = useCanvasStore((s) => s.respondPermission)
   const forkChat = useCanvasStore((s) => s.forkChat)
@@ -129,15 +69,31 @@ function ChatNodeView({ id, data, selected }: NodeProps<ChatNode>): React.JSX.El
   const { fitView } = useReactFlow()
 
   const textareaRef = useRef<HTMLTextAreaElement>(null)
+  const titleRef = useRef<HTMLInputElement>(null)
   const scrollRef = useRef<HTMLDivElement>(null)
   const rootRef = useRef<HTMLDivElement>(null)
+
+  // The title is static text (part of the header drag surface) until the user
+  // enters rename mode via the pencil button or a double-click on the title.
+  // Minimizing exits rename during render because the input unmounts blur-less.
+  const [editingTitle, setEditingTitle] = useState(false)
+  if (data.minimized && editingTitle) setEditingTitle(false)
+
+  useEffect(() => {
+    if (!editingTitle) return
+    titleRef.current?.focus()
+    titleRef.current?.select()
+  }, [editingTitle])
   // Follow new content only while the user is at (or near) the bottom,
   // so scrolling up to read history never gets yanked back down.
   const stickToBottom = useRef(true)
   const streaming = data.status === 'streaming'
   const empty = data.messages.length === 0
   // Fork-ahead: forkable once the chat has a tip (a completed assistant reply).
-  const canFork = !streaming && data.messages.some((m) => m.role === 'assistant' && m.uuid)
+  // Forks themselves don't offer the button — only root chats fork.
+  const isFork = useCanvasStore((s) => s.edges.some((e) => e.target === id))
+  const canFork =
+    !isFork && !streaming && data.messages.some((m) => m.role === 'assistant' && m.uuid)
 
   const palette = paletteFor(data.color)
 
@@ -159,7 +115,7 @@ function ChatNodeView({ id, data, selected }: NodeProps<ChatNode>): React.JSX.El
     if (anchorKey) {
       const zoom = flowStore.getState().transform[2]
       const rootRect = root.getBoundingClientRect()
-      const headerH = 28 // keep endpoints below the title row
+      const headerH = 56 // keep endpoints below the title row
       const maxY = Math.max(headerH, rootRect.height / zoom - 12)
       for (const messageId of anchorKey.split(',')) {
         const el = root.querySelector(`[data-msg="${messageId}"]`)
@@ -215,80 +171,10 @@ function ChatNodeView({ id, data, selected }: NodeProps<ChatNode>): React.JSX.El
     if (el) el.scrollTop = el.scrollHeight
   }, [])
 
-  // The transcript is `nowheel` (plain scroll stays inside it), but two cases
-  // must still reach React Flow: ⌘/ctrl+scroll and pinch (canvas zoom), and any
-  // scroll the transcript can't absorb — no overflow, or already at the edge —
-  // which pans the canvas so an off-screen node bottom can be scrolled into view.
-  const lastInnerWheelAt = useRef(0)
-  useEffect(() => {
-    const el = scrollRef.current
-    if (!el) return
-    const forwardToPane = (e: WheelEvent): void => {
-      e.preventDefault()
-      e.stopPropagation()
-      const pane = el.closest('.react-flow')?.querySelector('.react-flow__pane')
-      pane?.dispatchEvent(
-        new WheelEvent('wheel', {
-          deltaX: e.deltaX,
-          deltaY: e.deltaY,
-          deltaMode: e.deltaMode,
-          clientX: e.clientX,
-          clientY: e.clientY,
-          ctrlKey: e.ctrlKey,
-          metaKey: e.metaKey,
-          bubbles: true,
-          cancelable: true
-        })
-      )
-    }
-    // True if something between the wheel target and the transcript (e.g. an
-    // overflowing code block) can still scroll horizontally in this direction.
-    const childCanScrollX = (e: WheelEvent): boolean => {
-      let node = e.target instanceof HTMLElement ? e.target : null
-      while (node && node !== el) {
-        const { overflowX } = getComputedStyle(node)
-        if (
-          (overflowX === 'auto' || overflowX === 'scroll') &&
-          node.scrollWidth > node.clientWidth + 1 &&
-          (e.deltaX > 0
-            ? node.scrollLeft + node.clientWidth < node.scrollWidth - 1
-            : node.scrollLeft > 0)
-        ) {
-          return true
-        }
-        node = node.parentElement
-      }
-      return false
-    }
-    const onWheel = (e: WheelEvent): void => {
-      if (e.metaKey || e.ctrlKey) {
-        forwardToPane(e)
-        return
-      }
-      // Any upward wheel during streaming releases the auto-follow immediately.
-      if (e.deltaY < 0) stickToBottom.current = false
-      // Mostly-horizontal: scroll an overflowing code block if one is under the
-      // cursor, otherwise pan the canvas — a sideways trackpad pan shouldn't die
-      // just because it drifted over a chat.
-      if (Math.abs(e.deltaY) <= Math.abs(e.deltaX)) {
-        if (!childCanScrollX(e)) forwardToPane(e)
-        return
-      }
-      const canScroll = el.scrollHeight - el.clientHeight > 1
-      const atEdge =
-        e.deltaY < 0 ? el.scrollTop <= 0 : el.scrollHeight - el.scrollTop - el.clientHeight <= 1
-      if (canScroll && !atEdge) {
-        lastInnerWheelAt.current = performance.now()
-        return
-      }
-      // At an edge, a fling that just landed here shouldn't slingshot into a
-      // canvas pan — only chain once the gesture that hit the edge has died down.
-      if (canScroll && performance.now() - lastInnerWheelAt.current < 200) return
-      forwardToPane(e)
-    }
-    el.addEventListener('wheel', onWheel, { passive: false })
-    return () => el.removeEventListener('wheel', onWheel)
-  }, [empty])
+  // Any upward wheel during streaming releases the auto-follow immediately.
+  useForwardedWheel(scrollRef, !empty && !data.minimized, () => {
+    stickToBottom.current = false
+  })
 
   const handleScroll = (): void => {
     const el = scrollRef.current
@@ -318,6 +204,15 @@ function ChatNodeView({ id, data, selected }: NodeProps<ChatNode>): React.JSX.El
     }
   }
 
+  const forkAndCenter = (): void => {
+    const forkId = forkChat(id)
+    if (!forkId) return
+    // let React Flow mount and measure the new node before fitting to it
+    setTimeout(() => {
+      void fitView({ nodes: [{ id: forkId }], duration: 300, padding: 0.1, maxZoom: 1 })
+    }, 50)
+  }
+
   return (
     <div
       ref={rootRef}
@@ -334,7 +229,7 @@ function ChatNodeView({ id, data, selected }: NodeProps<ChatNode>): React.JSX.El
           '--np-ring': `${palette.accent}B3` // selection ring at 70%
         } as React.CSSProperties
       }
-      className={`drag-handle flex h-full w-full cursor-grab flex-col rounded-[14px] border border-black/5 shadow-md active:cursor-grabbing ${
+      className={`flex h-full w-full flex-col rounded-[14px] border border-black/5 shadow-md ${
         selected ? 'ring-2 ring-(--np-ring)' : ''
       }`}
     >
@@ -377,7 +272,7 @@ function ChatNodeView({ id, data, selected }: NodeProps<ChatNode>): React.JSX.El
       )}
 
       <div
-        className={`flex shrink-0 items-center gap-2 px-2 py-1 ${
+        className={`${DRAG_HEADER} flex shrink-0 items-center gap-2 px-3 py-1.5 ${
           data.minimized ? '' : 'border-b border-(--np-edge)'
         }`}
       >
@@ -388,7 +283,7 @@ function ChatNodeView({ id, data, selected }: NodeProps<ChatNode>): React.JSX.El
             title="Minimize"
             className={CHIP_BUTTON}
           >
-            <Minus className="h-3.5 w-3.5" />
+            <Minus className="h-[25px] w-[25px]" />
           </button>
         )}
         <button
@@ -397,22 +292,56 @@ function ChatNodeView({ id, data, selected }: NodeProps<ChatNode>): React.JSX.El
           title={data.minimized ? 'Expand' : 'Zoom to fit'}
           className={CHIP_BUTTON}
         >
-          <Expand className="h-3.5 w-3.5" />
+          <Expand className="h-[25px] w-[25px]" />
         </button>
-        <span
-          className={`truncate text-[13px] font-medium text-(--np-deep) ${data.title ? '' : 'opacity-50'}`}
-        >
-          {data.title || 'New chat'}
-        </span>
+        {editingTitle && !data.minimized ? (
+          <input
+            ref={titleRef}
+            value={data.title}
+            placeholder="New chat"
+            onChange={(e) => setTitle(id, e.target.value)}
+            onBlur={() => setEditingTitle(false)}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') {
+                e.preventDefault()
+                setEditingTitle(false)
+                textareaRef.current?.focus()
+              } else if (e.key === 'Escape') {
+                setEditingTitle(false)
+              }
+            }}
+            className="nodrag min-w-0 flex-1 cursor-text truncate bg-transparent text-[26px] font-medium text-(--np-deep) outline-none placeholder:text-(--np-deep) placeholder:opacity-50"
+          />
+        ) : (
+          <span
+            onDoubleClick={() => {
+              if (!data.minimized) setEditingTitle(true)
+            }}
+            title={data.minimized ? undefined : 'Double-click to rename'}
+            className={`min-w-0 flex-1 truncate text-[26px] font-medium text-(--np-deep) ${data.title ? '' : 'opacity-50'}`}
+          >
+            {data.title || 'New chat'}
+          </span>
+        )}
         <div className="nodrag relative ml-auto flex shrink-0 items-center gap-1">
+          {!data.minimized && (
+            <button
+              type="button"
+              onClick={() => setEditingTitle(true)}
+              title="Rename this chat"
+              className={CHIP_BUTTON}
+            >
+              <Pencil className="h-[25px] w-[25px]" />
+            </button>
+          )}
           {canFork && (
             <button
               type="button"
-              onClick={() => forkChat(id)}
+              onClick={forkAndCenter}
               title="Fork this chat from its latest message"
               className={CHIP_BUTTON}
             >
-              <GitFork className="h-3.5 w-3.5" />
+              <GitFork className="h-[25px] w-[25px]" />
             </button>
           )}
           <button
@@ -421,7 +350,7 @@ function ChatNodeView({ id, data, selected }: NodeProps<ChatNode>): React.JSX.El
             title="Delete this chat"
             className={CHIP_BUTTON}
           >
-            <Trash2 className="h-3.5 w-3.5" />
+            <Trash2 className="h-[25px] w-[25px]" />
           </button>
         </div>
       </div>

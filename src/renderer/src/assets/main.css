@@ -97,3 +97,84 @@ body {
   color: var(--color-blue-600);
   text-decoration: underline;
 }
+
+/* Note WYSIWYG body: zero block margins and 26px line-heights keep every
+   line — headings included — sitting on the ruled-paper grid */
+.note-prose p,
+.note-prose ul,
+.note-prose ol,
+.note-prose li,
+.note-prose blockquote,
+.note-prose pre,
+.note-prose h1,
+.note-prose h2,
+.note-prose h3,
+.note-prose h4,
+.note-prose h5,
+.note-prose h6 {
+  margin: 0;
+  line-height: 26px;
+}
+.note-prose ul,
+.note-prose ol {
+  padding-left: 1.5em;
+}
+.note-prose ul {
+  list-style: disc;
+}
+.note-prose ol {
+  list-style: decimal;
+}
+/* All heading levels render the same: text spanning two ruled lines, with
+   the same leading as body text (15px in 26px → 11px), so the height comes
+   from the glyphs, not padding: 52px − 11px = 41px font. */
+.note-prose h1,
+.note-prose h2,
+.note-prose h3,
+.note-prose h4,
+.note-prose h5,
+.note-prose h6 {
+  font-weight: 600;
+  font-size: 41px;
+  line-height: 52px;
+}
+.note-prose a {
+  color: var(--color-blue-600);
+  text-decoration: underline;
+}
+.note-prose code {
+  background: rgba(0, 0, 0, 0.05);
+  border-radius: 4px;
+  padding: 0 0.3em;
+  font-size: 0.875em;
+}
+.note-prose pre {
+  background: rgba(0, 0, 0, 0.04);
+  border-radius: 8px;
+  padding: 0 0.8em;
+  overflow-x: auto;
+  font-size: 13px;
+}
+.note-prose pre code {
+  background: none;
+  padding: 0;
+}
+.note-prose blockquote {
+  border-left: 3px solid var(--color-neutral-300);
+  padding-left: 0.85em;
+  color: var(--color-neutral-600);
+}
+.note-prose hr {
+  margin: 0;
+  border: none;
+  border-top: 1px solid var(--color-neutral-300);
+}
+
+/* TipTap's Placeholder extension stamps the empty paragraph; render its hint */
+.note-prose p.is-editor-empty:first-child::before {
+  content: attr(data-placeholder);
+  color: var(--color-neutral-400);
+  float: left;
+  height: 0;
+  pointer-events: none;
+}
