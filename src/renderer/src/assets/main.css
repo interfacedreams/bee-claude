@@ -194,6 +194,12 @@ body {
   font-weight: 600;
   background: rgba(255, 255, 255, 0.7);
 }
+.prose-chat .katex-display {
+  margin: 0 0 0.75em;
+  padding: 0.2em 0;
+  overflow-x: auto;
+  overflow-y: hidden;
+}
 
 /* Note WYSIWYG body: zero block margins and 26px line-heights keep every
    line — headings included — sitting on the ruled-paper grid */
