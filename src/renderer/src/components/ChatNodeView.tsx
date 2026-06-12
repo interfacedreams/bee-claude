@@ -10,6 +10,7 @@ import {
 } from '@xyflow/react'
 import TextareaAutosize from 'react-textarea-autosize'
 import Markdown from 'react-markdown'
+import remarkGfm from 'remark-gfm'
 import {
   Expand,
   GitFork,
@@ -63,7 +64,7 @@ function MessageView({
   }
   return (
     <div data-msg={message.id} className="prose-chat mb-2 px-3 py-1">
-      <Markdown>{message.text}</Markdown>
+      <Markdown remarkPlugins={[remarkGfm]}>{message.text}</Markdown>
       {pending && <div className="animate-pulse tracking-widest text-neutral-400">●●●</div>}
     </div>
   )

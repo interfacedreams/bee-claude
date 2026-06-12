@@ -13,6 +13,15 @@ export interface FolderState {
   recents: FolderInfo[] // folders with at least one chat (plus the current one), most recent first
 }
 
+// How the agent SDK subprocess will authenticate. A stored Claude
+// subscription OAuth token (from `claude setup-token`) wins over the
+// ANTHROPIC_API_KEY that .env provides.
+export interface AuthStatus {
+  method: 'subscription' | 'apiKey' | 'none'
+  tokenSuffix: string | null // last characters of the stored token, for display
+  hasApiKey: boolean // an API key exists as fallback if the token is removed
+}
+
 export interface PersistedMessage {
   id: string
   role: 'user' | 'assistant'

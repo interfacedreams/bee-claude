@@ -20,6 +20,7 @@ import ContextConnectOverlay from './ContextConnectOverlay'
 import BeeIcon from './BeeIcon'
 import TopBar from './TopBar'
 import Sidebar from './Sidebar'
+import AuthKeyButton from './AuthKeyButton'
 import PlacementOverlay from './PlacementOverlay'
 import DeleteChatModal from './DeleteChatModal'
 import { useCanvasStore, NODE_W } from '../store/canvas'
@@ -236,7 +237,12 @@ function CanvasInner(): React.JSX.Element {
           </ReactFlow>
         )}
 
-        {loaded && folder?.current && <Sidebar />}
+        {loaded && (
+          <div className="absolute bottom-4 left-4 z-10 flex items-end gap-2">
+            {folder?.current && <Sidebar />}
+            <AuthKeyButton />
+          </div>
+        )}
 
         {loaded && <PlacementOverlay />}
 

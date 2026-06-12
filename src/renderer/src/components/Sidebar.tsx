@@ -1,5 +1,6 @@
-import { useMemo } from 'react'
+import { useMemo, useState } from 'react'
 import { useReactFlow } from '@xyflow/react'
+import { Minus, Plus } from 'lucide-react'
 import { useCanvasStore, isChat, isNote, type CanvasNode } from '../store/canvas'
 import { paletteFor } from '../lib/palette'
 
@@ -18,11 +19,16 @@ const PAPER = '#FFFDF6'
  * their canvas connector handles wear. Clicking a row does what the node's
  * expand chip does: un-minimize if needed and center the viewport on it.
  * Height hugs the content up to roughly a third of the screen, then scrolls.
+ * The header's minus chip (a small cousin of the node windows' minimize chip)
+ * collapses the whole panel down to a "+ Recent" pill; clicking it reopens.
+ * Positioning is owned by the bottom-left overlay container in Canvas, which
+ * seats this panel beside the auth key button.
  */
 export default function Sidebar(): React.JSX.Element | null {
   const nodes = useCanvasStore((s) => s.nodes)
   const toggleMinimize = useCanvasStore((s) => s.toggleMinimize)
   const { fitView } = useReactFlow()
+  const [collapsed, setCollapsed] = useState(false)
 
   // Chats and notes share the list; files and ephemeral researcher
   // transcripts stay off it.
@@ -48,14 +54,36 @@ export default function Sidebar(): React.JSX.Element | null {
   // An empty floating box looks broken — show nothing until there's a node.
   if (listed.length === 0) return null
 
+  if (collapsed) {
+    return (
+      <button
+        type="button"
+        onClick={() => setCollapsed(false)}
+        title="Show recent list"
+        className="flex cursor-pointer items-center gap-1.5 rounded-[14px] border border-[#E2DAC0] bg-[#FFFDF6] px-3.5 py-2 text-[12px] font-semibold text-[#92690B] shadow-lg transition-colors hover:bg-[#F2EDD8]"
+      >
+        <Plus className="h-3.5 w-3.5" />
+        Recent
+      </button>
+    )
+  }
+
   return (
     <aside
-      className="absolute bottom-4 left-4 z-10 flex w-56 max-h-[clamp(240px,34vh,480px)] flex-col overflow-hidden rounded-[14px] border border-[#E2DAC0] shadow-lg"
+      className="flex max-h-[clamp(240px,34vh,480px)] w-56 flex-col overflow-hidden rounded-[14px] border border-[#E2DAC0] shadow-lg"
       style={{ backgroundColor: PAPER }}
     >
-      <h2 className="shrink-0 border-b border-[#E2DAC0] px-3.5 py-2 text-[12px] font-semibold text-[#92690B]">
-        Recent
-      </h2>
+      <div className="flex shrink-0 items-center justify-between border-b border-[#E2DAC0] py-1.5 pl-3.5 pr-1.5">
+        <h2 className="text-[12px] font-semibold text-[#92690B]">Recent</h2>
+        <button
+          type="button"
+          onClick={() => setCollapsed(true)}
+          title="Hide recent list"
+          className="flex h-6 w-6 shrink-0 cursor-pointer items-center justify-center rounded-md bg-[#F2EDD8] text-[#92690B] transition-colors hover:bg-[#E2DAC0]"
+        >
+          <Minus className="h-4 w-4" />
+        </button>
+      </div>
       <div className="min-h-0 overflow-y-auto p-1">
         {listed.map((n) => {
           const note = isNote(n)

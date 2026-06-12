@@ -1,4 +1,4 @@
-import { app, shell, BrowserWindow, dialog, ipcMain } from 'electron'
+import { app, shell, BrowserWindow, dialog, ipcMain, safeStorage } from 'electron'
 import { randomUUID } from 'crypto'
 import { promises as fs, readFileSync, constants as fsConstants } from 'fs'
 import { basename, extname, isAbsolute, join, relative, resolve } from 'path'
@@ -7,6 +7,7 @@ import { query, type SDKUserMessage } from '@anthropic-ai/claude-agent-sdk'
 import icon from '../../resources/icon.png?asset'
 import { DEFAULT_MODEL, MODEL_OPTIONS, TITLE_MODEL } from '../shared/types'
 import type {
+  AuthStatus,
   CanvasDoc,
   ChosenFile,
   FolderState,
@@ -376,6 +377,79 @@ function loadDotEnv(): void {
   } catch {
     // no .env — fine if the key is already in the environment
   }
+}
+
+// Claude subscription auth: a long-lived OAuth token from `claude setup-token`
+// stored in userData (encrypted when the OS keychain is available). The agent
+// SDK subprocess inherits our env, so choosing it means exporting
+// CLAUDE_CODE_OAUTH_TOKEN and removing ANTHROPIC_API_KEY — inside the CLI an
+// API key would otherwise take precedence over the subscription token.
+
+const authFile = (): string => join(app.getPath('userData'), 'auth.json')
+
+let envApiKey: string | undefined // the .env/environment key, kept so clearing the token restores it
+let oauthToken: string | null = null
+
+async function readStoredToken(): Promise<string | null> {
+  try {
+    const raw = JSON.parse(await fs.readFile(authFile(), 'utf8'))
+    if (typeof raw.encrypted === 'string' && safeStorage.isEncryptionAvailable()) {
+      return safeStorage.decryptString(Buffer.from(raw.encrypted, 'base64')) || null
+    }
+    if (typeof raw.token === 'string' && raw.token) return raw.token
+  } catch {
+    // missing or unreadable — treated as no token
+  }
+  return null
+}
+
+async function writeStoredToken(token: string): Promise<void> {
+  const body = safeStorage.isEncryptionAvailable()
+    ? { encrypted: safeStorage.encryptString(token).toString('base64') }
+    : { token }
+  await fs.writeFile(authFile(), JSON.stringify(body), { mode: 0o600 })
+}
+
+function applyAuthEnv(): void {
+  if (oauthToken) {
+    process.env.CLAUDE_CODE_OAUTH_TOKEN = oauthToken
+    delete process.env.ANTHROPIC_API_KEY
+  } else {
+    delete process.env.CLAUDE_CODE_OAUTH_TOKEN
+    if (envApiKey !== undefined) process.env.ANTHROPIC_API_KEY = envApiKey
+  }
+}
+
+function authStatus(): AuthStatus {
+  return {
+    method: oauthToken ? 'subscription' : envApiKey ? 'apiKey' : 'none',
+    tokenSuffix: oauthToken ? oauthToken.slice(-4) : null,
+    hasApiKey: envApiKey !== undefined
+  }
+}
+
+function registerAuthIpc(): void {
+  ipcMain.handle('auth:status', (): AuthStatus => authStatus())
+
+  ipcMain.handle('auth:setToken', async (_event, token: string): Promise<AuthStatus> => {
+    const trimmed = String(token).trim()
+    // setup-token output starts with sk-ant-oat…; accept any sk-ant- prefix
+    // so a future prefix change doesn't lock users out.
+    if (!trimmed.startsWith('sk-ant-')) {
+      throw new Error('That does not look like a Claude token (expected sk-ant-…)')
+    }
+    oauthToken = trimmed
+    await writeStoredToken(trimmed)
+    applyAuthEnv()
+    return authStatus()
+  })
+
+  ipcMain.handle('auth:clearToken', async (): Promise<AuthStatus> => {
+    oauthToken = null
+    await fs.rm(authFile(), { force: true })
+    applyAuthEnv()
+    return authStatus()
+  })
 }
 
 // Research mode: the lead agent of a chat turn may spawn these subagents.
@@ -1027,6 +1101,11 @@ app.whenReady().then(async () => {
 
   loadDotEnv()
 
+  // Decide auth before any SDK call: stored subscription token beats .env key.
+  envApiKey = process.env.ANTHROPIC_API_KEY
+  oauthToken = await readStoredToken()
+  applyAuthEnv()
+
   // Reopen the folder from last time if it still exists.
   const settings = await readSettings()
   if (settings.current && (await dirExists(settings.current))) folderRoot = settings.current
@@ -1036,6 +1115,7 @@ app.whenReady().then(async () => {
   registerFileIpc()
   registerThreadIpc()
   registerFolderIpc()
+  registerAuthIpc()
 
   createWindow()
 

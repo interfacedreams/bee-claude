@@ -1,6 +1,7 @@
 import { contextBridge, ipcRenderer, webUtils } from 'electron'
 import { electronAPI } from '@electron-toolkit/preload'
 import type {
+  AuthStatus,
   CanvasDoc,
   ChosenFile,
   FolderState,
@@ -12,6 +13,11 @@ import type {
 
 // Custom APIs for renderer
 const api = {
+  auth: {
+    status: (): Promise<AuthStatus> => ipcRenderer.invoke('auth:status'),
+    setToken: (token: string): Promise<AuthStatus> => ipcRenderer.invoke('auth:setToken', token),
+    clearToken: (): Promise<AuthStatus> => ipcRenderer.invoke('auth:clearToken')
+  },
   folder: {
     get: (): Promise<FolderState> => ipcRenderer.invoke('folder:get'),
     choose: (): Promise<FolderState | null> => ipcRenderer.invoke('folder:choose'),
