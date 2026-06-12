@@ -10,11 +10,26 @@ import {
 } from '@xyflow/react'
 import TextareaAutosize from 'react-textarea-autosize'
 import Markdown from 'react-markdown'
-import { Expand, GitFork, Minus, Pencil, Telescope, Trash2 } from 'lucide-react'
+import {
+  Expand,
+  GitFork,
+  Minus,
+  Pencil,
+  RotateCcw,
+  Telescope,
+  Trash2,
+  TriangleAlert
+} from 'lucide-react'
 import { useCanvasStore, MAX_NODE_H, type ChatNode, type Message } from '../store/canvas'
 import { paletteFor } from '../lib/palette'
 import { useForwardedWheel } from '../lib/useForwardedWheel'
-import { CHIP_BUTTON, DRAG_HEADER, HIDDEN_HANDLE } from '../lib/nodeChrome'
+import {
+  CHIP_BUTTON,
+  CTX_HANDLE_ID,
+  ctxHandleStyle,
+  DRAG_HEADER,
+  HIDDEN_HANDLE
+} from '../lib/nodeChrome'
 import BeeIcon from './BeeIcon'
 import PermissionPrompt from './PermissionPrompt'
 
@@ -48,9 +63,7 @@ function MessageView({
   return (
     <div data-msg={message.id} className="prose-chat mb-2 px-3 py-1">
       <Markdown>{message.text}</Markdown>
-      {pending && (
-        <div className="animate-pulse tracking-widest text-neutral-400">●●●</div>
-      )}
+      {pending && <div className="animate-pulse tracking-widest text-neutral-400">●●●</div>}
     </div>
   )
 }
@@ -59,6 +72,7 @@ function ChatNodeView({ id, data, selected }: NodeProps<ChatNode>): React.JSX.El
   const setDraft = useCanvasStore((s) => s.setDraft)
   const setTitle = useCanvasStore((s) => s.setTitle)
   const send = useCanvasStore((s) => s.send)
+  const retry = useCanvasStore((s) => s.retry)
   const respondPermission = useCanvasStore((s) => s.respondPermission)
   const forkChat = useCanvasStore((s) => s.forkChat)
   const toggleResearch = useCanvasStore((s) => s.toggleResearch)
@@ -109,8 +123,7 @@ function ChatNodeView({ id, data, selected }: NodeProps<ChatNode>): React.JSX.El
   const setAnchorOffsets = useCanvasStore((s) => s.setAnchorOffsets)
   const anchorKey = useCanvasStore((s) =>
     s.edges
-      .filter((e) => e.source === id)
-      .map((e) => e.sourceMessageId)
+      .flatMap((e) => (e.source === id && e.sourceMessageId ? [e.sourceMessageId] : []))
       .join(',')
   )
   const measureAnchors = useCallback(() => {
@@ -243,6 +256,21 @@ function ChatNodeView({ id, data, selected }: NodeProps<ChatNode>): React.JSX.El
       {/* invisible anchors so fork edges have somewhere to attach */}
       <Handle type="target" position={Position.Left} isConnectable={false} style={HIDDEN_HANDLE} />
       <Handle type="source" position={Position.Right} isConnectable={false} style={HIDDEN_HANDLE} />
+      {/* the context connector: notes' circles drop here. Receive-only — a
+          context arrow always starts at a note. Research transcripts can't
+          send, so context would never reach a model; they get no circle. */}
+      {!isResearch && (
+        <Handle
+          id={CTX_HANDLE_ID}
+          type="target"
+          position={Position.Top}
+          isConnectable
+          isConnectableStart={false}
+          title="Drop a note's circle here to attach it as context"
+          className="ctx-handle"
+          style={ctxHandleStyle(palette.accent)}
+        />
+      )}
 
       {!data.minimized && (
         <>
@@ -333,6 +361,12 @@ function ChatNodeView({ id, data, selected }: NodeProps<ChatNode>): React.JSX.El
         {data.minimized && streaming && (
           <span className="shrink-0 animate-pulse tracking-widest text-neutral-400">●●●</span>
         )}
+        {data.minimized && data.status === 'error' && (
+          <TriangleAlert
+            className="h-5 w-5 shrink-0 text-red-600"
+            aria-label={data.lastError ?? 'The turn failed'}
+          />
+        )}
         <div className="nodrag relative ml-auto flex shrink-0 items-center gap-1">
           {!data.minimized && (
             <button
@@ -384,6 +418,24 @@ function ChatNodeView({ id, data, selected }: NodeProps<ChatNode>): React.JSX.El
               />
             ))}
           </div>
+        </div>
+      )}
+
+      {!data.minimized && data.status === 'error' && (
+        <div className="nodrag mx-1 mt-2 flex shrink-0 cursor-auto items-start gap-2 rounded-[10px] bg-red-50/90 px-3 py-2 text-[14px] leading-snug text-red-800">
+          <TriangleAlert className="mt-0.5 h-4 w-4 shrink-0" />
+          <span className="min-w-0 flex-1 break-words select-text">
+            {data.lastError ?? 'The turn failed.'}
+          </span>
+          <button
+            type="button"
+            onClick={() => retry(id)}
+            title="Retry the failed message"
+            className="flex shrink-0 items-center gap-1 rounded-md bg-red-700 px-2.5 py-1 font-medium text-white transition-colors hover:bg-red-800"
+          >
+            <RotateCcw className="h-3.5 w-3.5" />
+            Retry
+          </button>
         </div>
       )}
 

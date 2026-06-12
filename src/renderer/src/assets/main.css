@@ -33,6 +33,82 @@ body {
   background: var(--color-neutral-400);
 }
 
+/* Context connector circles (note → chat). Size/placement are inline
+   (ctxHandleStyle); React Flow positions them with translate(-50%, -50%),
+   which every transform here has to repeat. The circle swells on hover and
+   while a connection drag is over it, and glows when it's a valid drop. */
+.ctx-handle.react-flow__handle {
+  transition:
+    transform 120ms ease,
+    box-shadow 120ms ease;
+}
+/* Swell on hover / while a connection is over it. The translate must match
+   the side React Flow pinned the handle to: top (chats) vs bottom (notes). */
+.ctx-handle.react-flow__handle-top:hover,
+.ctx-handle.react-flow__handle-top.connectingfrom,
+.ctx-handle.react-flow__handle-top.connectingto,
+.ctx-handle.react-flow__handle-top.valid,
+.ctx-handle.react-flow__handle-top.ctx-armed {
+  transform: translate(-50%, -50%) scale(1.25);
+}
+.ctx-handle.react-flow__handle-bottom:hover,
+.ctx-handle.react-flow__handle-bottom.connectingfrom,
+.ctx-handle.react-flow__handle-bottom.connectingto,
+.ctx-handle.react-flow__handle-bottom.valid,
+.ctx-handle.react-flow__handle-bottom.ctx-armed {
+  transform: translate(-50%, 50%) scale(1.25);
+}
+.ctx-handle.react-flow__handle.valid {
+  box-shadow: 0 0 0 5px rgba(146, 105, 11, 0.25);
+}
+/* Tapped (armed for click-to-connect): stay swollen with a breathing glow
+   until the connection is committed or canceled */
+.ctx-handle.react-flow__handle.ctx-armed {
+  animation: ctx-armed-pulse 1.2s ease-in-out infinite;
+}
+@keyframes ctx-armed-pulse {
+  0%,
+  100% {
+    box-shadow: 0 0 0 4px rgba(146, 105, 11, 0.25);
+  }
+  50% {
+    box-shadow: 0 0 0 9px rgba(146, 105, 11, 0.1);
+  }
+}
+
+/* Click-to-connect pending arrow (ContextConnectOverlay): faded while it
+   follows the cursor, brightening and pulsing once snapped onto a chat */
+.ctx-pending .ctx-pending-line {
+  opacity: 0.4;
+}
+.ctx-pending.ctx-snapped .ctx-pending-line {
+  animation: ctx-line-pulse 1.2s ease-in-out infinite;
+}
+@keyframes ctx-line-pulse {
+  0%,
+  100% {
+    opacity: 0.9;
+  }
+  50% {
+    opacity: 0.55;
+  }
+}
+/* the ring breathes around the target circle while snapped */
+.ctx-pending-ring {
+  animation: ctx-ring-pulse 1.2s ease-in-out infinite;
+}
+@keyframes ctx-ring-pulse {
+  0%,
+  100% {
+    r: 16px;
+    opacity: 0.9;
+  }
+  50% {
+    r: 21px;
+    opacity: 0.4;
+  }
+}
+
 /* Minimal markdown styling for assistant messages */
 .prose-chat > :first-child {
   margin-top: 0;

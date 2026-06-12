@@ -2,9 +2,11 @@ import { useCallback, useEffect } from 'react'
 import {
   Background,
   BackgroundVariant,
+  MarkerType,
   ReactFlow,
   ReactFlowProvider,
   useReactFlow,
+  type Connection,
   type EdgeTypes,
   type NodeTypes
 } from '@xyflow/react'
@@ -12,16 +14,19 @@ import '@xyflow/react/dist/style.css'
 import ChatNodeView from './ChatNodeView'
 import NoteNodeView from './NoteNodeView'
 import ForkEdge from './ForkEdge'
+import ContextEdge from './ContextEdge'
+import ContextConnectOverlay from './ContextConnectOverlay'
 import BeeIcon from './BeeIcon'
 import TopBar from './TopBar'
 import PlacementOverlay from './PlacementOverlay'
 import DeleteChatModal from './DeleteChatModal'
 import { useCanvasStore, NODE_W } from '../store/canvas'
+import { CTX_HANDLE_ID } from '../lib/nodeChrome'
 import { paletteFor } from '../lib/palette'
 import { useSpawn } from '../lib/useSpawn'
 
 const nodeTypes: NodeTypes = { chat: ChatNodeView, note: NoteNodeView }
-const edgeTypes: EdgeTypes = { fork: ForkEdge }
+const edgeTypes: EdgeTypes = { fork: ForkEdge, context: ContextEdge }
 
 function CanvasInner(): React.JSX.Element {
   const nodes = useCanvasStore((s) => s.nodes)
@@ -29,6 +34,7 @@ function CanvasInner(): React.JSX.Element {
   const loaded = useCanvasStore((s) => s.loaded)
   const folder = useCanvasStore((s) => s.folder)
   const onNodesChange = useCanvasStore((s) => s.onNodesChange)
+  const addContextEdge = useCanvasStore((s) => s.addContextEdge)
   const addNodeAt = useCanvasStore((s) => s.addNodeAt)
   const addNoteAt = useCanvasStore((s) => s.addNoteAt)
   const setStoreViewport = useCanvasStore((s) => s.setViewport)
@@ -75,6 +81,19 @@ function CanvasInner(): React.JSX.Element {
     return () => window.removeEventListener('keydown', onKeyDown)
   }, [fitView, spawn])
 
+  // Releasing a connection drag on (or near — connectionRadius snaps) a
+  // chat's circle commits the note → chat context link. Only note circles
+  // can start a drag and only chat circles can end one, so source/target
+  // here are already the right kinds; the store re-validates anyway.
+  const handleConnect = useCallback(
+    (conn: Connection) => {
+      addContextEdge(conn.source, conn.target)
+      // a drag-connect landing mid click-to-connect supersedes it
+      useCanvasStore.getState().setCtxConnectSource(null)
+    },
+    [addContextEdge]
+  )
+
   // Double-click on empty canvas: spawn a chat right there, under the cursor
   // (a note with alt/option held).
   const handleDoubleClick = useCallback(
@@ -96,28 +115,53 @@ function CanvasInner(): React.JSX.Element {
         {loaded && (
           <ReactFlow
             nodes={nodes}
-            edges={storeEdges.map((e) => ({
-              id: e.id,
-              source: e.source,
-              target: e.target,
-              type: 'fork',
-              data: { sourceMessageId: e.sourceMessageId },
-              // fork connectors take the parent chat's accent color;
-              // researcher connectors are dashed to read as ephemeral spawns
-              style: {
-                stroke: paletteFor(nodes.find((n) => n.id === e.source)?.data.color).accent,
-                strokeWidth: 3,
-                ...(nodes.find((n) => n.id === e.target)?.data.kind === 'research'
-                  ? { strokeDasharray: '6 4' }
-                  : {})
-              },
-              focusable: false,
-              selectable: false
-            }))}
+            edges={storeEdges.map((e) => {
+              const accent = paletteFor(nodes.find((n) => n.id === e.source)?.data.color).accent
+              if (e.kind === 'context') {
+                // context connectors run top circle → top circle in the
+                // note's accent, arrowhead marking which way context flows
+                return {
+                  id: e.id,
+                  source: e.source,
+                  target: e.target,
+                  sourceHandle: CTX_HANDLE_ID,
+                  targetHandle: CTX_HANDLE_ID,
+                  type: 'context',
+                  style: { stroke: accent, strokeWidth: 3 },
+                  markerEnd: { type: MarkerType.ArrowClosed, color: accent, width: 14, height: 14 },
+                  focusable: false,
+                  selectable: false
+                }
+              }
+              return {
+                id: e.id,
+                source: e.source,
+                target: e.target,
+                type: 'fork',
+                data: { sourceMessageId: e.sourceMessageId },
+                // fork connectors take the parent chat's accent color;
+                // researcher connectors are dashed to read as ephemeral spawns
+                style: {
+                  stroke: accent,
+                  strokeWidth: 3,
+                  ...(nodes.find((n) => n.id === e.target)?.data.kind === 'research'
+                    ? { strokeDasharray: '6 4' }
+                    : {})
+                },
+                focusable: false,
+                selectable: false
+              }
+            })}
             onNodesChange={onNodesChange}
+            onConnect={handleConnect}
             nodeTypes={nodeTypes}
             edgeTypes={edgeTypes}
-            nodesConnectable={false}
+            // connecting is opt-in per handle: only the ctx circles are live
+            // (the hidden fork anchors stay isConnectable={false})
+            connectionRadius={60}
+            connectionLineStyle={{ stroke: '#C9A227', strokeWidth: 3, strokeDasharray: '6 4' }}
+            // tap-to-connect is ours (ContextConnectOverlay), not React Flow's
+            connectOnClick={false}
             minZoom={0.05}
             maxZoom={2}
             panOnScroll
@@ -128,6 +172,7 @@ function CanvasInner(): React.JSX.Element {
             onDoubleClick={handleDoubleClick}
           >
             <Background variant={BackgroundVariant.Dots} gap={24} size={1.5} color="#E2DAC0" />
+            <ContextConnectOverlay />
           </ReactFlow>
         )}
 

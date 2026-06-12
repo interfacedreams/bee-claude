@@ -12,7 +12,13 @@ import { ChevronLeft, ChevronRight, Expand, History, Minus, Pencil, Trash2 } fro
 import { useCanvasStore, MAX_NODE_H, type NoteNode } from '../store/canvas'
 import { paletteFor } from '../lib/palette'
 import { useForwardedWheel } from '../lib/useForwardedWheel'
-import { CHIP_BUTTON, DRAG_HEADER, HIDDEN_HANDLE } from '../lib/nodeChrome'
+import {
+  CHIP_BUTTON,
+  CTX_HANDLE_ID,
+  ctxHandleStyle,
+  DRAG_HEADER,
+  HIDDEN_HANDLE
+} from '../lib/nodeChrome'
 import NoteEditor, { type NoteEditorHandle } from './NoteEditor'
 
 // Notes read as paper, not post-it: a warm-white ruled body under a colored
@@ -29,6 +35,8 @@ function NoteNodeView({ id, data, selected }: NodeProps<NoteNode>): React.JSX.El
   const discardNode = useCanvasStore((s) => s.discardNode)
   const toggleMinimize = useCanvasStore((s) => s.toggleMinimize)
   const clearFocusDraft = useCanvasStore((s) => s.clearFocusDraft)
+  const setCtxConnectSource = useCanvasStore((s) => s.setCtxConnectSource)
+  const armed = useCanvasStore((s) => s.ctxConnectSource === id)
   const explicitHeight = useCanvasStore((s) => s.nodes.find((n) => n.id === id)?.height)
   const { fitView } = useReactFlow()
 
@@ -123,9 +131,29 @@ function NoteNodeView({ id, data, selected }: NodeProps<NoteNode>): React.JSX.El
         selected ? 'ring-2 ring-(--np-ring)' : ''
       }`}
     >
-      {/* anchors so future note↔chat edges have somewhere to attach */}
+      {/* hidden layout anchors (left/right) kept for any id-less edges */}
       <Handle type="target" position={Position.Left} isConnectable={false} style={HIDDEN_HANDLE} />
       <Handle type="source" position={Position.Right} isConnectable={false} style={HIDDEN_HANDLE} />
+      {/* the context connector: drag this circle onto a chat's circle — or
+          tap it and the arrow follows the cursor until a click on a chat
+          commits (ContextConnectOverlay) — to feed the note into that chat's
+          system prompt */}
+      <Handle
+        id={CTX_HANDLE_ID}
+        type="source"
+        position={Position.Bottom}
+        isConnectable
+        isConnectableEnd={false}
+        title="Drag — or tap, then click a chat — to attach this note as context"
+        onClick={(e) => {
+          // keep the tap from reaching the overlay's window listener,
+          // which treats any stray click as cancel
+          e.stopPropagation()
+          setCtxConnectSource(armed ? null : id)
+        }}
+        className={`ctx-handle ${armed ? 'ctx-armed' : ''}`}
+        style={ctxHandleStyle(palette.accent, 'bottom')}
+      />
 
       {!data.minimized && (
         <>

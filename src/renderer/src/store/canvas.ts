@@ -35,7 +35,7 @@ const EST_NODE_H = 360
 
 export type Message = PersistedMessage
 
-export type ChatStatus = 'empty' | 'idle' | 'streaming'
+export type ChatStatus = 'empty' | 'idle' | 'streaming' | 'error'
 
 export interface ChatData {
   title: string
@@ -50,6 +50,7 @@ export interface ChatData {
   forkOf?: ForkRef // pending fork; consumed by the first send, then cleared
   focusDraft?: boolean // autofocus the composer when the node mounts
   lastUsage?: TurnUsage // tokens/cost of the most recent turn
+  lastError?: string // what the failed turn said; shown while status === 'error'
   pendingPermission?: PermissionRequest // tool call awaiting the user's Allow/Deny
   // Research children are display-only researcher transcripts: no composer,
   // no forking, no session of their own (they ran inside the lead's session).
@@ -141,13 +142,15 @@ function tooClose(a: Rect, b: Rect): boolean {
   return intersects({ x: a.x - GAP, y: a.y - GAP, w: a.w + 2 * GAP, h: a.h + 2 * GAP }, b)
 }
 
-/** A node plus every chat forked from it, transitively (fork edges run source → target). */
+/** A node plus every chat forked from it, transitively (fork edges run source → target).
+ *  Context edges don't count — a note feeding a chat doesn't own it. */
 export function forkSubtree(edges: PersistedEdge[], rootId: string): Set<string> {
   const ids = new Set([rootId])
   let grew = true
   while (grew) {
     grew = false
     for (const e of edges) {
+      if (e.kind === 'context') continue
       if (ids.has(e.source) && !ids.has(e.target)) {
         ids.add(e.target)
         grew = true
@@ -200,6 +203,11 @@ interface CanvasState {
   // placement click on the canvas (armed by the toolbar buttons / C / N).
   placing: 'chat' | 'note' | null
   setPlacing: (kind: 'chat' | 'note' | null) => void
+  // Runtime-only: click-to-connect. A tap on a note's circle arms it; the
+  // pending context arrow follows the cursor (ContextConnectOverlay) until a
+  // click on a chat commits the edge — or any other click / Esc cancels.
+  ctxConnectSource: string | null
+  setCtxConnectSource: (id: string | null) => void
   requestDelete: (id: string) => void
   cancelDelete: () => void
   deleteChat: (id: string, cascade: boolean) => void
@@ -219,10 +227,14 @@ interface CanvasState {
   setViewVersion: (id: string, index: number | undefined) => void
   restoreVersion: (id: string, index: number) => Promise<void>
   send: (id: string) => void
+  retry: (id: string) => void
   sendNote: (id: string) => Promise<void>
   toggleResearch: (id: string) => void
   respondPermission: (id: string, requestId: string, allow: boolean) => void
   forkChat: (nodeId: string) => string | null
+  // Context edges: a note feeding a chat's system prompt (note → chat only).
+  addContextEdge: (noteId: string, chatId: string) => void
+  removeContextEdge: (edgeId: string) => void
   discardNode: (id: string) => void
   toggleMinimize: (id: string) => void
   load: () => Promise<Viewport | null>
@@ -340,6 +352,19 @@ export const useCanvasStore = create<CanvasState>((set, get) => {
 
   const anyStreaming = (): boolean => get().nodes.some((n) => n.data.status === 'streaming')
 
+  // Notes wired to a chat by context edges go along with every send — read
+  // from the store, which always holds the freshest content (autosave
+  // debounce notwithstanding).
+  const contextNotesFor = (id: string): { id: string; title: string; content: string }[] =>
+    get()
+      .edges.filter((e) => e.kind === 'context' && e.target === id)
+      .flatMap((e) => {
+        const src = get().nodes.find((n) => n.id === e.source)
+        return src && isNote(src)
+          ? [{ id: src.id, title: src.data.title || 'Untitled note', content: src.data.content }]
+          : []
+      })
+
   // A fresh node takes over both kinds of focus: it becomes the selected node
   // (everything else deselects) and focusDraft moves the keyboard into it.
   const adopt = <T extends CanvasNode>(node: T): T => {
@@ -376,8 +401,11 @@ export const useCanvasStore = create<CanvasState>((set, get) => {
     anchorOffsets: {},
     pendingDeleteId: null,
     placing: null,
+    ctxConnectSource: null,
 
     setPlacing: (kind) => set({ placing: kind }),
+
+    setCtxConnectSource: (id) => set({ ctxConnectSource: id }),
 
     setModel: (model) => {
       set({ model })
@@ -572,6 +600,24 @@ export const useCanvasStore = create<CanvasState>((set, get) => {
       return node.id
     },
 
+    addContextEdge: (noteId, chatId) => {
+      const s = get()
+      const src = s.nodes.find((n) => n.id === noteId)
+      const tgt = s.nodes.find((n) => n.id === chatId)
+      if (!src || !tgt || !isNote(src) || !isChat(tgt) || tgt.data.kind === 'research') return
+      if (s.edges.some((e) => e.kind === 'context' && e.source === noteId && e.target === chatId))
+        return // already connected
+      set((st) => ({
+        edges: [...st.edges, { id: uid(), source: noteId, target: chatId, kind: 'context' }]
+      }))
+      persist()
+    },
+
+    removeContextEdge: (edgeId) => {
+      set((s) => ({ edges: s.edges.filter((e) => e.id !== edgeId) }))
+      persist()
+    },
+
     discardNode: (id) => {
       const node = get().nodes.find((n) => n.id === id)
       set((s) => ({
@@ -630,6 +676,7 @@ export const useCanvasStore = create<CanvasState>((set, get) => {
                   draft: '',
                   status: 'streaming' as const,
                   growthCap,
+                  lastError: undefined, // a fresh send supersedes any failed turn
                   title: node.data.title || text.slice(0, 60),
                   researchArmed: false // one-shot: research applies to this send only
                 }
@@ -640,6 +687,8 @@ export const useCanvasStore = create<CanvasState>((set, get) => {
       persist() // title may have changed
       persistThread(id) // the user message is part of the durable transcript now
 
+      const contextNotes = contextNotesFor(id)
+
       void window.api.thread.send({
         nodeId: id,
         text,
@@ -647,7 +696,56 @@ export const useCanvasStore = create<CanvasState>((set, get) => {
         model: get().model,
         // first send of a forked node: fork the parent session at the anchor
         ...(!node.data.sessionId && node.data.forkOf ? { forkFrom: node.data.forkOf } : {}),
-        ...(node.data.researchArmed ? { research: true } : {})
+        ...(node.data.researchArmed ? { research: true } : {}),
+        ...(contextNotes.length > 0 ? { contextNotes } : {})
+      })
+    },
+
+    // Re-run a failed turn: same prompt, same session. The session resume may
+    // already hold the failed turn's partial output — acceptable; the retry
+    // prompt repeats and the model answers fresh.
+    retry: (id) => {
+      const node = get().nodes.find((n) => n.id === id)
+      if (!node || !isChat(node) || node.data.status !== 'error') return
+      const lastUser = [...node.data.messages].reverse().find((m) => m.role === 'user')
+      if (!lastUser) return
+
+      // Stream into the failed turn's bubble: reuse a trailing assistant
+      // message, or add a fresh placeholder if the turn died before one landed.
+      const last = node.data.messages[node.data.messages.length - 1]
+      const messages: Message[] =
+        last && last.role === 'assistant'
+          ? [...node.data.messages.slice(0, -1), { ...last, text: '' }]
+          : [...node.data.messages, { id: uid(), role: 'assistant', text: '' }]
+
+      const growthCap = viewportFitHeight(get().viewport.zoom)
+      set((s) => ({
+        nodes: s.nodes.map((n) =>
+          n.id === id
+            ? ({
+                ...n,
+                height: undefined,
+                data: {
+                  ...n.data,
+                  messages,
+                  status: 'streaming' as const,
+                  growthCap,
+                  lastError: undefined
+                }
+              } as CanvasNode)
+            : n
+        )
+      }))
+
+      const contextNotes = contextNotesFor(id)
+      void window.api.thread.send({
+        nodeId: id,
+        text: lastUser.text,
+        sessionId: node.data.sessionId,
+        model: get().model,
+        // the failed turn may have been a fork's first send — fork again
+        ...(!node.data.sessionId && node.data.forkOf ? { forkFrom: node.data.forkOf } : {}),
+        ...(contextNotes.length > 0 ? { contextNotes } : {})
       })
     },
 
@@ -851,8 +949,8 @@ window.api.thread.onEvent((event) => {
       }
     }
     patch(event.nodeId, (node) => {
-      const warning = event.ok === false ? `\n\n⚠️ ${event.error ?? 'The agent run failed.'}` : ''
       if (isNote(node)) {
+        const warning = event.ok === false ? `\n\n⚠️ ${event.error ?? 'The agent run failed.'}` : ''
         return {
           status: 'idle',
           pendingPermission: undefined,
@@ -863,8 +961,22 @@ window.api.thread.onEvent((event) => {
         }
       }
       const last = node.data.messages[node.data.messages.length - 1]
+      if (event.ok === false) {
+        return {
+          status: 'error', // the error strip (with Retry) takes it from here
+          lastError: event.error ?? 'The turn failed.',
+          pendingPermission: undefined,
+          ...(event.usage ? { lastUsage: event.usage } : {}),
+          // drop an untouched placeholder; keep whatever partial text streamed
+          messages:
+            last && last.role === 'assistant' && last.text === ''
+              ? node.data.messages.slice(0, -1)
+              : node.data.messages
+        }
+      }
       return {
         status: 'idle',
+        lastError: undefined,
         pendingPermission: undefined, // safety net if the turn dies mid-prompt
         ...(event.usage ? { lastUsage: event.usage } : {}),
         messages:
@@ -872,15 +984,35 @@ window.api.thread.onEvent((event) => {
             ? [
                 ...node.data.messages.slice(0, -1),
                 // stamp the SDK uuid — it's the anchor that makes this message forkable
-                {
-                  ...last,
-                  text: last.text + warning,
-                  ...(event.messageUuid ? { uuid: event.messageUuid } : {})
-                }
+                { ...last, ...(event.messageUuid ? { uuid: event.messageUuid } : {}) }
               ]
             : node.data.messages
       }
     })
     useCanvasStore.getState().persistThread(event.nodeId)
+
+    // First successful exchange still wearing its send-time stub (the opening
+    // message's first 60 chars): swap in a real title from a one-shot Haiku
+    // turn in the background. A user rename — before or during — wins.
+    if (event.ok) {
+      const node = useCanvasStore.getState().nodes.find((n) => n.id === event.nodeId)
+      if (node && isChat(node) && node.data.kind !== 'research') {
+        const firstUser = node.data.messages.find((m) => m.role === 'user')
+        const stub = firstUser?.text.slice(0, 60)
+        if (stub && node.data.title === stub) {
+          const reply = node.data.messages.find((m) => m.role === 'assistant' && m.text)
+          const conversation =
+            `User: ${firstUser!.text.slice(0, 1500)}\n\n` +
+            `Assistant: ${(reply?.text ?? '').slice(0, 1500)}`
+          void window.api.thread.title(conversation).then((title) => {
+            if (!title) return
+            const cur = useCanvasStore.getState().nodes.find((n) => n.id === event.nodeId)
+            if (cur && cur.data.title === stub) {
+              useCanvasStore.getState().setTitle(event.nodeId, title)
+            }
+          })
+        }
+      }
+    }
   }
 })

@@ -40,6 +40,8 @@ const api = {
   },
   thread: {
     send: (args: ThreadSendArgs): Promise<void> => ipcRenderer.invoke('thread:send', args),
+    title: (conversation: string): Promise<string | null> =>
+      ipcRenderer.invoke('thread:title', conversation),
     respondPermission: (reply: PermissionReply): void => {
       ipcRenderer.send('thread:permission', reply)
     },

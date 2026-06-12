@@ -73,7 +73,11 @@ export interface PersistedEdge {
   id: string
   source: string
   target: string
-  sourceMessageId: string
+  // 'fork' chains chat sessions; 'context' feeds a note into a chat's system
+  // prompt. Omitted means 'fork' (canvases that predate context edges).
+  kind?: 'fork' | 'context'
+  /** Fork edges only: the message in the source chat the edge anchors on. */
+  sourceMessageId?: string
 }
 
 export interface CanvasDoc {
@@ -104,7 +108,21 @@ export type ModelId = (typeof MODEL_OPTIONS)[number]['id']
 
 export const DEFAULT_MODEL: ModelId = 'claude-sonnet-4-6'
 
+// Cheap one-shot background jobs (chat titles) always run on the small model,
+// regardless of the user's picker choice.
+export const TITLE_MODEL: ModelId = 'claude-haiku-4-5'
+
 // --- Thread IPC (renderer ⇄ main) ---
+
+/** A note wired to a chat by a context edge — its content rides the chat's
+ *  system prompt for every turn while the connection exists. */
+export interface ContextNote {
+  /** The note's node id — main resolves it to the note's filename so the
+   *  agent knows the file is already in hand and doesn't re-read it. */
+  id: string
+  title: string
+  content: string
+}
 
 export interface ThreadSendArgs {
   nodeId: string
@@ -120,6 +138,9 @@ export interface ThreadSendArgs {
   noteTitle?: string
   /** Research mode: the lead may spawn researcher subagents for this turn. */
   research?: boolean
+  /** Notes connected to this chat by context edges, freshest content first-hand
+   *  from the renderer's store. */
+  contextNotes?: ContextNote[]
 }
 
 /** A tool call waiting on the user's Allow/Deny (SDK canUseTool round-trip). */

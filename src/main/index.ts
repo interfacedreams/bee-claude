@@ -5,7 +5,7 @@ import { basename, join, resolve } from 'path'
 import { electronApp, optimizer, is } from '@electron-toolkit/utils'
 import { query } from '@anthropic-ai/claude-agent-sdk'
 import icon from '../../resources/icon.png?asset'
-import { DEFAULT_MODEL, MODEL_OPTIONS } from '../shared/types'
+import { DEFAULT_MODEL, MODEL_OPTIONS, TITLE_MODEL } from '../shared/types'
 import type {
   CanvasDoc,
   FolderState,
@@ -295,6 +295,43 @@ const RESEARCH_APPEND =
   'inline numbered citations [1] and a Sources section listing every URL.'
 
 function registerThreadIpc(): void {
+  // Chat titles: a lazy one-shot Haiku turn after a chat's first exchange.
+  // Tool-less and session-less — it never touches the chat's own session.
+  ipcMain.handle('thread:title', async (_event, conversation: string): Promise<string | null> => {
+    const root = folderRoot
+    if (!root) return null
+    try {
+      const turn = query({
+        prompt:
+          'Write a title for the conversation below: 3-6 words, plain text, no quotes, ' +
+          'no trailing punctuation. Reply with the title only.\n\n' +
+          conversation,
+        options: {
+          cwd: root,
+          model: TITLE_MODEL,
+          maxTurns: 1,
+          tools: [], // text-only turn — no tools, so no permission round-trips
+          systemPrompt: 'You write concise titles. Reply with only the title.'
+        }
+      })
+      for await (const msg of turn) {
+        if (msg.type === 'result') {
+          if (msg.subtype !== 'success') return null
+          const title = msg.result
+            .trim()
+            .replace(/^["'“”]+|["'“”.]+$/g, '')
+            .replace(/\s+/g, ' ')
+            .slice(0, 60)
+            .trim()
+          return title || null
+        }
+      }
+    } catch {
+      // a failed title is just no title — the send-time stub stays
+    }
+    return null
+  })
+
   // Permission requests in flight: requestId → resolver for the user's verdict.
   // canUseTool blocks the SDK turn until the renderer answers via thread:permission.
   const pendingPermissions = new Map<string, (allow: boolean) => void>()
@@ -310,7 +347,17 @@ function registerThreadIpc(): void {
     'thread:send',
     async (
       event,
-      { nodeId, text, sessionId, forkFrom, kind, noteTitle, research, model }: ThreadSendArgs
+      {
+        nodeId,
+        text,
+        sessionId,
+        forkFrom,
+        kind,
+        noteTitle,
+        research,
+        model,
+        contextNotes
+      }: ThreadSendArgs
     ) => {
       // The renderer sends an id from MODEL_OPTIONS; anything else falls back.
       const turnModel = MODEL_OPTIONS.some((m) => m.id === model)
@@ -350,6 +397,34 @@ function registerThreadIpc(): void {
           await snapshotNote(root, nodeId, 'user')
         }
 
+        // Connected notes ride the system prompt, re-read from the canvas on
+        // every send — edit a note and the chat's next turn sees the new text.
+        // Prompt caching tolerates this: a changed note only means one cache
+        // miss on the system-prompt prefix (it re-caches immediately); the
+        // conversation itself is untouched since each turn resumes the session.
+        // The framing is deliberately authoritative — the agent must answer
+        // from these blocks instead of burning a turn re-discovering the same
+        // notes on disk (each block names its file so the agent can tell).
+        const contextAppend =
+          contextNotes && contextNotes.length > 0
+            ? 'The user attached notes to this conversation. Their full, current contents ' +
+              'are below, refreshed on every message — this IS the live content of the ' +
+              'named files, so never search the project, check memory, or read these files ' +
+              'from disk to find this information. Just answer from what is here.\n\n' +
+              contextNotes
+                .map((n) => {
+                  const file = noteFiles.get(n.id)
+                  const attrs =
+                    `title=${JSON.stringify(n.title)}` +
+                    (file ? ` file=${JSON.stringify(file)}` : '')
+                  return `<note ${attrs}>\n${n.content}\n</note>`
+                })
+                .join('\n')
+            : ''
+        const systemAppend = [contextAppend, research ? RESEARCH_APPEND : '']
+          .filter(Boolean)
+          .join('\n\n')
+
         const prompt = notePath
           ? `You are connected to the markdown note "${noteTitle || 'Untitled'}" at ${notePath}. ` +
             `Apply the instruction below by editing that file directly — use the Edit tool ` +
@@ -371,7 +446,7 @@ function registerThreadIpc(): void {
             systemPrompt: {
               type: 'preset',
               preset: 'claude_code',
-              ...(research ? { append: RESEARCH_APPEND } : {})
+              ...(systemAppend ? { append: systemAppend } : {})
             },
             ...(research
               ? {
