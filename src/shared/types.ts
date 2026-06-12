@@ -13,6 +13,12 @@ export interface FolderState {
   recents: FolderInfo[] // folders with at least one chat (plus the current one), most recent first
 }
 
+// The tab nodes' shared session partition: its own persistent cookie jar,
+// shared with nothing else in the app — pages there are never logged into
+// the user's accounts. Referenced by the renderer's <webview partition=…>
+// and by main's window-open handling (popups navigate the tab itself).
+export const BROWSE_PARTITION = 'persist:browse'
+
 // How the agent SDK subprocess will authenticate. A stored Claude
 // subscription OAuth token (from `claude setup-token`) wins over the
 // ANTHROPIC_API_KEY that .env provides.
@@ -38,7 +44,9 @@ export interface ForkRef {
 // 'research' nodes are display-only researcher transcripts spawned by a
 // research-mode turn — no composer, no forking, no session of their own.
 // 'file' nodes pin an image or PDF from the folder onto the canvas.
-export type NodeKind = 'chat' | 'note' | 'research' | 'file'
+// 'link' nodes are tabs: an embedded browsable web page (a <webview> browser
+// card). The kind keeps its original name so existing canvas.json files load.
+export type NodeKind = 'chat' | 'note' | 'research' | 'file' | 'link'
 
 export interface PersistedNode {
   id: string
@@ -54,6 +62,8 @@ export interface PersistedNode {
   // File nodes: the file's path relative to the folder root — set by the
   // renderer after file:attach and round-tripped through canvas.json.
   file?: string
+  // Link nodes: the embedded page's URL.
+  url?: string
   // File nodes (images only): the image bytes as a data URL. Hydrated from
   // the file on load; never written into canvas.json. PDFs render a card
   // from their path alone, so they never carry one.
@@ -157,6 +167,16 @@ export interface ContextFile {
   isNew?: boolean
 }
 
+/** A link (web page) wired to a chat by a context edge. No content rides the
+ *  send — the system prompt carries the URL and tells the model to WebFetch it
+ *  on its first response; the fetched page then lives in the session
+ *  transcript like an injected file's bytes. */
+export interface ContextLink {
+  id: string
+  title: string
+  url: string
+}
+
 export interface ThreadSendArgs {
   nodeId: string
   text: string
@@ -176,6 +196,25 @@ export interface ThreadSendArgs {
   contextNotes?: ContextNote[]
   /** Files (images and PDFs) connected to this chat by context edges. */
   contextFiles?: ContextFile[]
+  /** Links (web pages) connected to this chat by context edges. */
+  contextLinks?: ContextLink[]
+}
+
+// --- Global permission settings ---
+
+/** App-wide permission preferences — userData/permissions.json. They apply to
+ *  every folder and chat, and take effect immediately (prompts already on
+ *  screen that the new settings cover resolve themselves). */
+export interface PermissionSettings {
+  /** Auto-approve WebSearch and WebFetch instead of prompting each time. */
+  allowWebSearch: boolean
+  /** Auto-approve every tool — no permission prompts at all. */
+  autoAllowAll: boolean
+}
+
+export const DEFAULT_PERMISSION_SETTINGS: PermissionSettings = {
+  allowWebSearch: false,
+  autoAllowAll: false
 }
 
 /** A tool call waiting on the user's Allow/Deny (SDK canUseTool round-trip). */

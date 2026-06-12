@@ -6,6 +6,7 @@ import type {
   ChosenFile,
   FolderState,
   PermissionReply,
+  PermissionSettings,
   PersistedMessage,
   ThreadEvent,
   ThreadSendArgs
@@ -17,6 +18,11 @@ const api = {
     status: (): Promise<AuthStatus> => ipcRenderer.invoke('auth:status'),
     setToken: (token: string): Promise<AuthStatus> => ipcRenderer.invoke('auth:setToken', token),
     clearToken: (): Promise<AuthStatus> => ipcRenderer.invoke('auth:clearToken')
+  },
+  settings: {
+    permissions: (): Promise<PermissionSettings> => ipcRenderer.invoke('settings:permissions:get'),
+    setPermissions: (patch: Partial<PermissionSettings>): Promise<PermissionSettings> =>
+      ipcRenderer.invoke('settings:permissions:set', patch)
   },
   folder: {
     get: (): Promise<FolderState> => ipcRenderer.invoke('folder:get'),
@@ -47,6 +53,8 @@ const api = {
     pathFor: (file: File): string => webUtils.getPathForFile(file),
     fromPath: (path: string): Promise<ChosenFile | null> =>
       ipcRenderer.invoke('file:fromPath', path),
+    // An image on the clipboard, staged to a temp file for attach.
+    fromClipboard: (): Promise<ChosenFile | null> => ipcRenderer.invoke('file:fromClipboard'),
     attach: (sourcePath: string): Promise<{ file: string } | null> =>
       ipcRenderer.invoke('file:attach', sourcePath),
     // PDF bytes for the inline viewer; Buffers arrive here as Uint8Array.

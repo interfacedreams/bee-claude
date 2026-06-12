@@ -65,6 +65,15 @@ export default function TopBar(): React.JSX.Element {
               <span>Add File</span>
               <span className={KEYCAP}>F</span>
             </button>
+            <button
+              type="button"
+              onClick={() => spawn('link')}
+              title={placing === 'link' ? 'Click the canvas to place — Esc cancels' : 'New tab (T)'}
+              className={`${SPAWN_BUTTON} ${placing === 'link' ? SPAWN_ARMED : SPAWN_IDLE}`}
+            >
+              <span>New Tab</span>
+              <span className={KEYCAP}>T</span>
+            </button>
           </>
         )}
       </div>

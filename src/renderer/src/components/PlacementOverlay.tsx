@@ -1,7 +1,14 @@
 import { useEffect, useRef, useState } from 'react'
 import { useReactFlow, useViewport } from '@xyflow/react'
 import { FileText } from 'lucide-react'
-import { useCanvasStore, fileFrame, FILE_HEADER_H, NODE_W, type PendingFile } from '../store/canvas'
+import {
+  useCanvasStore,
+  fileFrame,
+  FILE_HEADER_H,
+  LINK_INPUT_FRAME,
+  NODE_W,
+  type PendingFile
+} from '../store/canvas'
 import { nextColorId, paletteFor, type NodePalette } from '../lib/palette'
 
 // Where the node lands relative to the click: horizontally centered, with the
@@ -43,13 +50,14 @@ function ArmedOverlay({
   placing,
   pendingFile
 }: {
-  placing: 'chat' | 'note' | 'file'
+  placing: 'chat' | 'note' | 'file' | 'link'
   pendingFile: PendingFile | null
 }): React.JSX.Element {
   const setPlacing = useCanvasStore((s) => s.setPlacing)
   const addNodeAt = useCanvasStore((s) => s.addNodeAt)
   const addNoteAt = useCanvasStore((s) => s.addNoteAt)
   const addFileAt = useCanvasStore((s) => s.addFileAt)
+  const addLinkAt = useCanvasStore((s) => s.addLinkAt)
   // The ghost previews the color the node will actually get (palette cycle).
   const color = useCanvasStore((s) => nextColorId(s.nodes[s.nodes.length - 1]?.data.color))
   const { screenToFlowPosition, setCenter } = useReactFlow()
@@ -78,9 +86,11 @@ function ArmedOverlay({
     const node =
       placing === 'file'
         ? addFileAt(position)
-        : placing === 'note'
-          ? addNoteAt(position)
-          : addNodeAt(position)
+        : placing === 'link'
+          ? addLinkAt(position)
+          : placing === 'note'
+            ? addNoteAt(position)
+            : addNodeAt(position)
     setPlacing(null)
     if (!node) return
     // Placed while zoomed way out: come in to a readable zoom on the new node.
@@ -114,6 +124,9 @@ function ArmedOverlay({
   const pal = paletteFor(color)
   const isNote = placing === 'note'
   const isFile = placing === 'file'
+  const isLink = placing === 'link'
+  // notes, files, and links are paper under a colored header band
+  const isPaper = isNote || isFile || isLink
 
   return (
     <div
@@ -141,17 +154,16 @@ function ArmedOverlay({
               transform: `scale(${zoom})`,
               transformOrigin: 'top left',
               borderColor: pal.accent,
-              // notes and files are paper under a colored header band;
-              // chats are solid post-its
-              backgroundColor: isNote || isFile ? '#FFFDF699' : `${pal.bg}99`
+              // paper under a colored header band; chats are solid post-its
+              backgroundColor: isPaper ? '#FFFDF699' : `${pal.bg}99`
             }}
           >
             {/* header band: chips + placeholder title, same boxes as the real node */}
             <div
-              className={`flex items-center gap-2 border-b px-3 py-1.5 ${isNote || isFile ? 'rounded-t-[13px]' : ''}`}
+              className={`flex items-center gap-2 border-b px-3 py-1.5 ${isPaper ? 'rounded-t-[13px]' : ''}`}
               style={{
                 borderColor: pal.edge,
-                ...(isNote || isFile ? { backgroundColor: `${pal.bg}99` } : {})
+                ...(isPaper ? { backgroundColor: `${pal.bg}99` } : {})
               }}
             >
               <ChipGhost pal={pal} />
@@ -162,9 +174,11 @@ function ArmedOverlay({
               >
                 {isFile
                   ? pendingFile!.name.replace(/\.[^.]+$/, '')
-                  : isNote
-                    ? 'Untitled note'
-                    : 'New chat'}
+                  : isLink
+                    ? 'Untitled tab'
+                    : isNote
+                      ? 'Untitled note'
+                      : 'New chat'}
               </span>
               <div className="ml-auto flex shrink-0 items-center gap-1">
                 <ChipGhost pal={pal} />
@@ -197,6 +211,17 @@ function ArmedOverlay({
                     {pendingFile!.name}
                   </span>
                 </div>
+              </div>
+            ) : isLink ? (
+              // link: the slim paste-a-link card, input mock at the size it lands at
+              <div
+                className="flex items-center px-3"
+                style={{ height: LINK_INPUT_FRAME.height - FILE_HEADER_H }}
+              >
+                <div
+                  className="h-10 w-full rounded-[10px] border bg-white/70"
+                  style={{ borderColor: pal.edge }}
+                />
               </div>
             ) : isNote ? (
               // body mirrors NoteEditor's reserved blank-note height

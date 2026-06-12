@@ -228,9 +228,10 @@ body {
 .note-prose ol {
   list-style: decimal;
 }
-/* All heading levels render the same: text spanning two ruled lines, with
-   the same leading as body text (15px in 26px → 11px), so the height comes
-   from the glyphs, not padding: 52px − 11px = 41px font. */
+/* All heading levels render the same: a single-line heading still occupies
+   two ruled lines, but the glyphs sit on the lower rule (26px line box) with
+   an empty ruled line of padding above — so the air is at the top, not in
+   oversized type. Wrapped heading lines each add one 26px rule. */
 .note-prose h1,
 .note-prose h2,
 .note-prose h3,
@@ -238,8 +239,9 @@ body {
 .note-prose h5,
 .note-prose h6 {
   font-weight: 600;
-  font-size: 41px;
-  line-height: 52px;
+  font-size: 25px;
+  line-height: 26px;
+  padding-top: 26px;
 }
 .note-prose a {
   color: var(--color-blue-600);

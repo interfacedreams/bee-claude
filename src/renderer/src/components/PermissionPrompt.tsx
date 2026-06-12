@@ -1,5 +1,6 @@
 import { ShieldQuestion } from 'lucide-react'
 import type { PermissionRequest } from '../../../shared/types'
+import { useSettingsStore } from '../store/settings'
 
 /** The most telling detail of a tool input — the query/command/url, not raw JSON. */
 function permissionDetail(input: Record<string, unknown>): string {
@@ -17,6 +18,7 @@ export default function PermissionPrompt({
   onRespond: (allow: boolean) => void
 }): React.JSX.Element {
   const detail = permissionDetail(request.input)
+  const openSettings = useSettingsStore((s) => s.setModalOpen)
   return (
     <div className="nodrag mx-1 mt-2 shrink-0 cursor-auto rounded-[10px] border border-(--np-edge) bg-white/85 px-3 py-2 text-[14px]">
       <div className="flex items-center gap-2 font-medium text-neutral-800">
@@ -28,7 +30,15 @@ export default function PermissionPrompt({
           {detail}
         </div>
       )}
-      <div className="mt-2 flex justify-end gap-2">
+      <div className="mt-2 flex items-center gap-2">
+        <button
+          type="button"
+          onClick={() => openSettings(true)}
+          title="Auto-allow tools like this from the global settings"
+          className="mr-auto cursor-pointer text-[12px] text-neutral-400 underline underline-offset-2 transition-colors hover:text-neutral-600"
+        >
+          global settings
+        </button>
         <button
           type="button"
           onClick={() => onRespond(false)}

@@ -1,8 +1,56 @@
 import { useEffect, useImperativeHandle, useRef, type Ref } from 'react'
 import { EditorContent, useEditor, type Editor } from '@tiptap/react'
+import type { JSONContent } from '@tiptap/core'
 import StarterKit from '@tiptap/starter-kit'
+import HardBreak from '@tiptap/extension-hard-break'
 import { Markdown } from '@tiptap/markdown'
 import { Placeholder } from '@tiptap/extensions'
+
+// Serialize hard breaks as backslash breaks ("\<newline>", CommonMark's other
+// hard-break syntax) instead of the default trailing double-space. That keeps
+// the two syntaxes distinguishable in note files: "\<newline>" is deliberate
+// in-app structure (Shift+Enter, pasted lines), while trailing double-spaces
+// are how AI turns hard-wrap prose at ~80 cols — which setMarkdown demotes.
+const BackslashHardBreak = HardBreak.extend({
+  renderMarkdown: () => '\\\n'
+})
+
+// marked (under @tiptap/markdown) keeps soft breaks as literal "\n" inside
+// text tokens, and TipTap renders with white-space: pre-wrap — so AI-written
+// markdown hard-wrapped at ~80 cols would show its wrap seams as real line
+// breaks. Flatten them to spaces post-parse; deliberate structure is safe
+// because hard breaks are separate hardBreak nodes and code blocks keep
+// their newlines. parse() returns fresh JSON, so mutating is fine.
+function reflowSoftBreaks(node: JSONContent): JSONContent {
+  if (node.type === 'codeBlock') return node
+  if (typeof node.text === 'string') node.text = node.text.replace(/\n/g, ' ')
+  node.content?.forEach(reflowSoftBreaks)
+  return node
+}
+
+// Trailing double-spaces are markdown hard breaks — but in files they come
+// from AI turns hard-wrapping prose at ~80 cols, freezing the wrap seams at
+// whatever width the model picked. Demote them to soft breaks pre-parse so
+// reflowSoftBreaks flattens them. Deliberate in-app breaks are unaffected:
+// BackslashHardBreak serializes those as "\<newline>". Fenced code keeps its
+// bytes.
+function demoteTrailingSpaceBreaks(markdown: string): string {
+  let inFence = false
+  return markdown
+    .split('\n')
+    .map((line) => {
+      if (/^\s*(```|~~~)/.test(line)) inFence = !inFence
+      return inFence ? line : line.replace(/ {2,}$/, '')
+    })
+    .join('\n')
+}
+
+function setMarkdown(editor: Editor, markdown: string): void {
+  const content = editor.markdown
+    ? reflowSoftBreaks(editor.markdown.parse(demoteTrailingSpaceBreaks(markdown)))
+    : markdown
+  editor.commands.setContent(content, { emitUpdate: false })
+}
 
 export interface NoteEditorHandle {
   focus: () => void
@@ -41,16 +89,18 @@ function NoteEditor({
       // would be silently mangled on the parse → serialize round trip.
       StarterKit.configure({
         // plain click places the cursor; ⌘-click (below) opens the link
-        link: { openOnClick: false }
+        link: { openOnClick: false },
+        hardBreak: false // replaced by BackslashHardBreak
       }),
-      // breaks:true keeps single newlines as hard breaks — pasted lines and
-      // notes written before the WYSIWYG editor would otherwise collapse
-      // into one paragraph under CommonMark soft-break rules
-      Markdown.configure({ markedOptions: { breaks: true } }),
+      BackslashHardBreak,
+      Markdown,
       Placeholder.configure({ placeholder: 'Write a note…' })
     ],
-    contentType: 'markdown',
-    content,
+    // Initial content goes through setMarkdown (not the content option) so
+    // soft breaks reflow with the note width. Deliberate line structure
+    // still survives as backslash hard breaks ("\<newline>"), which pastes
+    // (below) and our own serializer emit.
+    onCreate: ({ editor }) => setMarkdown(editor, content),
     editable: !readOnly,
     onUpdate: ({ editor }) => onChangeRef.current(editor.getMarkdown()),
     editorProps: {
@@ -65,7 +115,10 @@ function NoteEditor({
         const clip = event.clipboardData
         const text = clip?.getData('text/plain')
         if (!text || clip?.getData('text/html')) return false
-        selfRef.current?.commands.insertContent(text, { contentType: 'markdown' })
+        // Each pasted line stays a line: CommonMark would reflow single
+        // newlines away, so make them explicit (backslash) hard breaks first.
+        const markdown = text.replace(/([^\n])\n(?!\n)/g, '$1\\\n')
+        selfRef.current?.commands.insertContent(markdown, { contentType: 'markdown' })
         return true
       }
     }
@@ -82,7 +135,7 @@ function NoteEditor({
   // so they compare equal and skip the reset — the cursor never jumps.
   useEffect(() => {
     if (!editor || content === editor.getMarkdown()) return
-    editor.commands.setContent(content, { contentType: 'markdown', emitUpdate: false })
+    setMarkdown(editor, content)
   }, [editor, content])
 
   useEffect(() => {

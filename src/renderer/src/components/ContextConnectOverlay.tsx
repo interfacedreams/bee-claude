@@ -1,16 +1,24 @@
 import { useEffect, useRef, useState } from 'react'
 import { getBezierPath, Position, useReactFlow, ViewportPortal } from '@xyflow/react'
-import { useCanvasStore, isChat, isFile, isNote, NODE_W, type CanvasNode } from '../store/canvas'
+import {
+  useCanvasStore,
+  isChat,
+  isFile,
+  isLink,
+  isNote,
+  NODE_W,
+  type CanvasNode
+} from '../store/canvas'
 import { paletteFor } from '../lib/palette'
 
-// Click-to-connect: once a note's or image's circle is tapped (ctxConnectSource
+// Click-to-connect: once a note's, file's, or link's circle is tapped (ctxConnectSource
 // in the store), this overlay draws a faded context arrow from that circle to
 // the cursor. Landing on a chat snaps the arrow onto its circle — where it
 // stays, pulsing, until the cursor strays — and a click commits the connection.
 // Any other click, or Escape, cancels.
 
 // Context sources: anything with a bottom circle that can feed a chat.
-const isCtxSource = (n: CanvasNode): boolean => isNote(n) || isFile(n)
+const isCtxSource = (n: CanvasNode): boolean => isNote(n) || isFile(n) || isLink(n)
 
 // Circle geometry mirrors ctxHandleStyle: center 15px outside the node edge
 // (above for chats, below for notes), radius 12 — the pending arrow runs from

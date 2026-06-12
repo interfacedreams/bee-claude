@@ -1,4 +1,4 @@
-import { useCallback, useEffect } from 'react'
+import { useCallback, useEffect, useRef } from 'react'
 import {
   Background,
   BackgroundVariant,
@@ -14,6 +14,7 @@ import '@xyflow/react/dist/style.css'
 import ChatNodeView from './ChatNodeView'
 import NoteNodeView from './NoteNodeView'
 import FileNodeView from './FileNodeView'
+import LinkNodeView from './LinkNodeView'
 import ForkEdge from './ForkEdge'
 import ContextEdge from './ContextEdge'
 import ContextConnectOverlay from './ContextConnectOverlay'
@@ -21,6 +22,7 @@ import BeeIcon from './BeeIcon'
 import TopBar from './TopBar'
 import Sidebar from './Sidebar'
 import AuthKeyButton from './AuthKeyButton'
+import SettingsButton from './SettingsButton'
 import PlacementOverlay from './PlacementOverlay'
 import DeleteChatModal from './DeleteChatModal'
 import { useCanvasStore, NODE_W } from '../store/canvas'
@@ -29,8 +31,28 @@ import { CTX_HANDLE_ID } from '../lib/nodeChrome'
 import { paletteFor } from '../lib/palette'
 import { useSpawn } from '../lib/useSpawn'
 
-const nodeTypes: NodeTypes = { chat: ChatNodeView, note: NoteNodeView, file: FileNodeView }
+const nodeTypes: NodeTypes = {
+  chat: ChatNodeView,
+  note: NoteNodeView,
+  file: FileNodeView,
+  link: LinkNodeView
+}
 const edgeTypes: EdgeTypes = { fork: ForkEdge, context: ContextEdge }
+
+/** The pasted text as an http(s) URL — null unless the whole paste is one
+ *  link (a scheme'd URL, or a bare domain like nuwapen.com/about). */
+function pastedUrl(text: string): string | null {
+  const t = text.trim()
+  if (!t || /\s/.test(t)) return null
+  if (!/^https?:\/\//i.test(t) && !/^[\w-]+(\.[\w-]+)+([/?#]|$)/.test(t)) return null
+  try {
+    const url = new URL(/^[a-z][a-z0-9+.-]*:/i.test(t) ? t : `https://${t}`)
+    if (url.protocol !== 'http:' && url.protocol !== 'https:') return null
+    return url.hostname.includes('.') ? url.href : null
+  } catch {
+    return null
+  }
+}
 
 function CanvasInner(): React.JSX.Element {
   const nodes = useCanvasStore((s) => s.nodes)
@@ -41,6 +63,7 @@ function CanvasInner(): React.JSX.Element {
   const addContextEdge = useCanvasStore((s) => s.addContextEdge)
   const addNodeAt = useCanvasStore((s) => s.addNodeAt)
   const addNoteAt = useCanvasStore((s) => s.addNoteAt)
+  const addLinkAt = useCanvasStore((s) => s.addLinkAt)
   const addDroppedFiles = useCanvasStore((s) => s.addDroppedFiles)
   const setStoreViewport = useCanvasStore((s) => s.setViewport)
   const init = useCanvasStore((s) => s.init)
@@ -71,15 +94,16 @@ function CanvasInner(): React.JSX.Element {
         }
         return
       }
-      // Bare C / N / F spawn a chat / note / file — but only when typing focus
-      // is elsewhere, so the letters still work inside inputs and notes.
+      // Bare C / N / F / T spawn a chat / note / file / tab — but only when
+      // typing focus is elsewhere, so the letters still work inside inputs
+      // and notes.
       if (e.altKey || e.repeat) return
       const t = e.target as HTMLElement
       if (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable) return
       const key = e.key.toLowerCase()
-      if (key === 'c' || key === 'n' || key === 'f') {
+      if (key === 'c' || key === 'n' || key === 'f' || key === 't') {
         e.preventDefault()
-        spawn(key === 'n' ? 'note' : key === 'f' ? 'file' : 'chat')
+        spawn(key === 'n' ? 'note' : key === 'f' ? 'file' : key === 't' ? 'link' : 'chat')
       }
     }
     window.addEventListener('keydown', onKeyDown)
@@ -87,9 +111,10 @@ function CanvasInner(): React.JSX.Element {
   }, [fitView, spawn])
 
   // Releasing a connection drag on (or near — connectionRadius snaps) a
-  // chat's circle commits the note/image → chat context link. Only note and
-  // image circles can start a drag and only chat circles can end one, so
-  // source/target here are already the right kinds; the store re-validates.
+  // chat's circle commits the note/file/link → chat context edge. Only note,
+  // file, and link circles can start a drag and only chat circles can end
+  // one, so source/target here are already the right kinds; the store
+  // re-validates.
   const handleConnect = useCallback(
     (conn: Connection) => {
       addContextEdge(conn.source, conn.target)
@@ -114,6 +139,62 @@ function CanvasInner(): React.JSX.Element {
       window.removeEventListener('drop', block)
     }
   }, [])
+
+  // Paste lands content straight on the canvas, no placement click: a URL
+  // becomes a link node already showing its page, an image on the clipboard
+  // (screenshot, copied photo, Finder-copied file) becomes a file node.
+  // Anchored under the cursor when it's over the canvas, else view center.
+  const wrapRef = useRef<HTMLDivElement>(null)
+  const lastMouse = useRef<{ x: number; y: number } | null>(null)
+  useEffect(() => {
+    const onPaste = (e: ClipboardEvent): void => {
+      // composers, titles, and notes keep their normal paste
+      const t = e.target as HTMLElement
+      if (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable) return
+      if (!useCanvasStore.getState().folder?.current) return
+      const dt = e.clipboardData
+      if (!dt) return
+
+      const rect = wrapRef.current?.getBoundingClientRect()
+      const client =
+        lastMouse.current ??
+        (rect
+          ? { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 }
+          : { x: window.innerWidth / 2, y: window.innerHeight / 2 })
+      const p = screenToFlowPosition(client)
+      const point = { x: p.x, y: p.y - 24 } // same cursor anchor as every other spawn
+
+      const files = Array.from(dt.files)
+      if (files.length > 0) {
+        e.preventDefault()
+        void (async () => {
+          // Finder-copied files carry paths — same vetting as a drop.
+          const picked = (
+            await Promise.all(
+              files.map((f) => {
+                const path = window.api.file.pathFor(f)
+                return path ? window.api.file.fromPath(path) : null
+              })
+            )
+          ).filter((c): c is ChosenFile => c !== null)
+          if (picked.length > 0) return addDroppedFiles(point, picked)
+          // Raw bytes (a screenshot, a copied photo) have no path — main
+          // reads the clipboard image and stages it for attach.
+          const chosen = await window.api.file.fromClipboard()
+          if (chosen) await addDroppedFiles(point, [chosen])
+        })()
+        return
+      }
+
+      const url = pastedUrl(dt.getData('text/plain'))
+      if (url) {
+        e.preventDefault()
+        addLinkAt({ x: point.x - NODE_W / 2, y: point.y }, url)
+      }
+    }
+    window.addEventListener('paste', onPaste)
+    return () => window.removeEventListener('paste', onPaste)
+  }, [screenToFlowPosition, addDroppedFiles, addLinkAt])
 
   // Images and PDFs dragged in from the OS drop as file nodes right where
   // they land — same vetting and placement as the picker, minus the dialog.
@@ -165,7 +246,18 @@ function CanvasInner(): React.JSX.Element {
     <div className="flex h-screen w-screen flex-col bg-[#FBFAF4]">
       <TopBar />
 
-      <div className="relative min-h-0 flex-1" onDragOver={handleDragOver} onDrop={handleDrop}>
+      <div
+        ref={wrapRef}
+        className="relative min-h-0 flex-1"
+        onDragOver={handleDragOver}
+        onDrop={handleDrop}
+        onMouseMove={(e) => {
+          lastMouse.current = { x: e.clientX, y: e.clientY }
+        }}
+        onMouseLeave={() => {
+          lastMouse.current = null
+        }}
+      >
         {loaded && (
           <ReactFlow
             nodes={nodes}
@@ -241,6 +333,7 @@ function CanvasInner(): React.JSX.Element {
           <div className="absolute bottom-4 left-4 z-10 flex items-end gap-2">
             {folder?.current && <Sidebar />}
             <AuthKeyButton />
+            <SettingsButton />
           </div>
         )}
 

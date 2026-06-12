@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { useCanvasStore, forkSubtree, isFile, isNote } from '../store/canvas'
+import { useCanvasStore, forkSubtree, isFile, isLink, isNote } from '../store/canvas'
 
 function Dialog({ pendingId }: { pendingId: string }): React.JSX.Element {
   const cancelDelete = useCanvasStore((s) => s.cancelDelete)
@@ -7,7 +7,7 @@ function Dialog({ pendingId }: { pendingId: string }): React.JSX.Element {
   const title = useCanvasStore((s) => s.nodes.find((n) => n.id === pendingId)?.data.title ?? '')
   const kind = useCanvasStore((s) => {
     const n = s.nodes.find((n) => n.id === pendingId)
-    return n && isNote(n) ? 'note' : n && isFile(n) ? 'image' : 'chat'
+    return n && isNote(n) ? 'note' : n && isFile(n) ? 'image' : n && isLink(n) ? 'tab' : 'chat'
   })
   const note = kind === 'note'
   // Only chats fork, so notes and images never have a subtree to cascade into.
@@ -45,6 +45,8 @@ function Dialog({ pendingId }: { pendingId: string }): React.JSX.Element {
               {title ? <>“{title}”</> : 'This image'} will be removed from the canvas. The image
               file stays in your folder.
             </>
+          ) : kind === 'tab' ? (
+            <>{title ? <>“{title}”</> : 'This tab'} will be removed from the canvas.</>
           ) : (
             <>
               {title ? (

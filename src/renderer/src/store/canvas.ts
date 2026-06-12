@@ -5,6 +5,7 @@ import type {
   CanvasDoc,
   ChosenFile,
   ContextFile,
+  ContextLink,
   FileKind,
   FolderState,
   ForkRef,
@@ -98,14 +99,26 @@ export interface FileData {
   [key: string]: unknown
 }
 
+export interface LinkData {
+  title: string
+  color?: string
+  url?: string // empty until the user commits one — the body shows the URL input
+  minimized: boolean
+  savedHeight?: number
+  updatedAt?: number // never stamped (links don't sit in the sidebar); declared so CanvasNode data reads uniformly
+  [key: string]: unknown
+}
+
 export type ChatNode = Node<ChatData, 'chat'>
 export type NoteNode = Node<NoteData, 'note'>
 export type FileNode = Node<FileData, 'file'>
-export type CanvasNode = ChatNode | NoteNode | FileNode
+export type LinkNode = Node<LinkData, 'link'>
+export type CanvasNode = ChatNode | NoteNode | FileNode | LinkNode
 
 export const isChat = (n: CanvasNode): n is ChatNode => n.type === 'chat'
 export const isNote = (n: CanvasNode): n is NoteNode => n.type === 'note'
 export const isFile = (n: CanvasNode): n is FileNode => n.type === 'file'
+export const isLink = (n: CanvasNode): n is LinkNode => n.type === 'link'
 
 // A file node's frame is explicit (width AND height) from birth so resizing
 // can keep the aspect ratio. The header band is part of that frame.
@@ -114,6 +127,10 @@ const MIN_FILE_W = 240
 // PDFs open as an inline pdf.js viewer — born at roughly one US-Letter page
 // (at 480 wide a page is ~620 tall), freely resizable since the pages scroll.
 export const PDF_FRAME = { width: 480, height: FILE_HEADER_H + 620 }
+// Tabs are born as a slim search-or-link card; committing opens the full
+// browser-card height (the page scrolls inside, like the PDF viewer).
+export const LINK_INPUT_FRAME = { width: NODE_W, height: FILE_HEADER_H + 64 }
+export const LINK_FRAME = { width: NODE_W, height: FILE_HEADER_H + 620 }
 
 /** A picked file riding the placement ghost — images carry their measured
  *  pixel size; PDFs place at the standard viewer frame. */
@@ -205,6 +222,27 @@ function makeFileNode(
   }
 }
 
+/** A link node's default title: the URL's bare hostname ('' if unparsable). */
+function hostTitle(url: string): string {
+  try {
+    return new URL(url).hostname.replace(/^www\./, '')
+  } catch {
+    return ''
+  }
+}
+
+function makeLinkNode(position: { x: number; y: number }, partial?: Partial<LinkData>): LinkNode {
+  return {
+    id: uid(),
+    type: 'link',
+    position,
+    width: LINK_INPUT_FRAME.width,
+    height: LINK_INPUT_FRAME.height,
+    dragHandle: '.drag-handle',
+    data: { title: '', minimized: false, ...partial }
+  }
+}
+
 function boxOf(n: CanvasNode): Rect {
   return {
     x: n.position.x,
@@ -281,15 +319,15 @@ interface CanvasState {
   // Runtime-only: node awaiting delete confirmation (the modal is open for it).
   pendingDeleteId: string | null
   // Runtime-only: a new-node ghost is stuck to the cursor, waiting for a
-  // placement click on the canvas (armed by the toolbar buttons / C / N / F).
-  placing: 'chat' | 'note' | 'file' | null
-  setPlacing: (kind: 'chat' | 'note' | 'file' | null) => void
+  // placement click on the canvas (armed by the toolbar buttons / C / N / F / L).
+  placing: 'chat' | 'note' | 'file' | 'link' | null
+  setPlacing: (kind: 'chat' | 'note' | 'file' | 'link' | null) => void
   // Runtime-only: the picked image riding the file-placement ghost.
   pendingFile: PendingFile | null
   // Open the image picker; on a pick, arm file placement with the image ghost.
   startFilePlacement: () => Promise<void>
-  // Runtime-only: click-to-connect. A tap on a note's or image's circle arms
-  // it; the pending context arrow follows the cursor (ContextConnectOverlay)
+  // Runtime-only: click-to-connect. A tap on a note's, file's, or link's circle
+  // arms it; the pending context arrow follows the cursor (ContextConnectOverlay)
   // until a click on a chat commits the edge — or any other click / Esc cancels.
   ctxConnectSource: string | null
   setCtxConnectSource: (id: string | null) => void
@@ -304,6 +342,13 @@ interface CanvasState {
   addNodeAt: (position: { x: number; y: number }) => ChatNode
   addNoteAt: (position: { x: number; y: number }) => NoteNode
   addFileAt: (position: { x: number; y: number }) => FileNode | null
+  // With a URL (a paste) the tab is born showing the page; without one it
+  // opens on the search-or-link input.
+  addLinkAt: (position: { x: number; y: number }, url?: string) => LinkNode
+  // Commit the URL a tab embeds; an untitled node takes the hostname.
+  setLinkUrl: (id: string, url: string) => void
+  // The tab's guest navigated — track its current URL (frame untouched).
+  syncTabUrl: (id: string, url: string) => void
   // OS drag-and-drop: place each dropped image/PDF as a file node centered on
   // the drop point (cascading when several arrive together) and attach it.
   addDroppedFiles: (point: { x: number; y: number }, picked: ChosenFile[]) => Promise<void>
@@ -320,8 +365,8 @@ interface CanvasState {
   respondPermission: (id: string, requestId: string, allow: boolean) => void
   forkChat: (nodeId: string) => string | null
   distillChat: (nodeId: string) => Promise<string | null>
-  // Context edges: a note or image feeding a chat's system prompt
-  // (note/image → chat only).
+  // Context edges: a note, file, or link feeding a chat's system prompt
+  // (note/file/link → chat only).
   addContextEdge: (sourceId: string, chatId: string) => void
   removeContextEdge: (edgeId: string) => void
   discardNode: (id: string) => void
@@ -371,9 +416,11 @@ export const useCanvasStore = create<CanvasState>((set, get) => {
             ? { kind: 'note' as const }
             : isFile(n)
               ? { kind: 'file' as const, ...(n.data.file ? { file: n.data.file } : {}) }
-              : n.data.kind === 'research'
-                ? { kind: 'research' as const }
-                : {}),
+              : isLink(n)
+                ? { kind: 'link' as const, ...(n.data.url ? { url: n.data.url } : {}) }
+                : n.data.kind === 'research'
+                  ? { kind: 'research' as const }
+                  : {}),
           position: n.position,
           width: n.width ?? NODE_W,
           ...(height != null ? { height } : {}),
@@ -381,7 +428,7 @@ export const useCanvasStore = create<CanvasState>((set, get) => {
           ...(n.data.updatedAt != null ? { updatedAt: n.data.updatedAt } : {}),
           ...(n.data.color ? { color: n.data.color } : {}),
           ...(n.data.minimized ? { minimized: true } : {}),
-          ...(!isFile(n) && n.data.sessionId ? { sessionId: n.data.sessionId } : {}),
+          ...(!isFile(n) && !isLink(n) && n.data.sessionId ? { sessionId: n.data.sessionId } : {}),
           ...(isChat(n) && n.data.forkOf ? { forkOf: n.data.forkOf } : {}),
           ...(isChat(n) && n.data.injectedImages?.length
             ? { injectedImages: n.data.injectedImages }
@@ -486,6 +533,26 @@ export const useCanvasStore = create<CanvasState>((set, get) => {
                 title:
                   src.data.title || (src.data.kind === 'pdf' ? 'Untitled PDF' : 'Untitled image'),
                 file: src.data.file
+              }
+            ]
+          : []
+      })
+
+  // Links wired to a chat go along as bare URLs — main lists them in the
+  // system prompt with an instruction to WebFetch each before the first
+  // answer, so no content is read (or cached) here. A link whose URL hasn't
+  // been committed yet sits out.
+  const contextLinksFor = (id: string): ContextLink[] =>
+    get()
+      .edges.filter((e) => e.kind === 'context' && e.target === id)
+      .flatMap((e) => {
+        const src = get().nodes.find((n) => n.id === e.source)
+        return src && isLink(src) && src.data.url
+          ? [
+              {
+                id: src.id,
+                title: src.data.title || hostTitle(src.data.url) || 'Untitled link',
+                url: src.data.url
               }
             ]
           : []
@@ -596,8 +663,8 @@ export const useCanvasStore = create<CanvasState>((set, get) => {
       for (const nodeId of doomed) {
         const node = byId.get(nodeId)
         if (node && isNote(node)) void window.api.note.delete(nodeId)
-        else if (node && isFile(node)) {
-          // the file stays in the folder — the node is just a pin
+        else if (node && (isFile(node) || isLink(node))) {
+          // nothing on disk to clean up — the node is just a pin
         } else void window.api.canvas.deleteThread(nodeId)
       }
       persist()
@@ -658,6 +725,51 @@ export const useCanvasStore = create<CanvasState>((set, get) => {
       const node = placeFile(position, pf)
       set({ pendingFile: null })
       return node
+    },
+
+    addLinkAt: (position, url) => {
+      const node = makeLinkNode(position, {
+        color: nextColor(),
+        ...(url ? { url, title: hostTitle(url) } : {})
+      })
+      if (url) node.height = LINK_FRAME.height
+      return adopt(node)
+    },
+
+    setLinkUrl: (id, url) => {
+      const node = get().nodes.find((n) => n.id === id)
+      if (!node || !isLink(node)) return
+      const title = node.data.title || hostTitle(url)
+      // The committed page opens at the full browser-card height.
+      set((s) => ({
+        nodes: s.nodes.map((n) =>
+          n.id === id
+            ? ({
+                ...n,
+                height: Math.max(n.height ?? 0, LINK_FRAME.height),
+                data: { ...n.data, url, title }
+              } as CanvasNode)
+            : n
+        )
+      }))
+      persist()
+    },
+
+    // A result click, an address-bar search, a redirect — keep data.url on
+    // the page actually showing (it's what a context edge hands to a chat,
+    // and where the tab reopens on canvas load). An auto host title follows
+    // the page along; a user-typed title stays put.
+    syncTabUrl: (id, url) => {
+      const node = get().nodes.find((n) => n.id === id)
+      if (!node || !isLink(node) || !url || node.data.url === url) return
+      const auto = !node.data.title || node.data.title === hostTitle(node.data.url ?? '')
+      const title = auto ? hostTitle(url) || node.data.title : node.data.title
+      set((s) => ({
+        nodes: s.nodes.map((n) =>
+          n.id === id ? ({ ...n, data: { ...n.data, url, title } } as CanvasNode) : n
+        )
+      }))
+      persist()
     },
 
     addDroppedFiles: async (point, picked) => {
@@ -735,7 +847,8 @@ export const useCanvasStore = create<CanvasState>((set, get) => {
 
     respondPermission: (id, requestId, allow) => {
       const node = get().nodes.find((n) => n.id === id)
-      if (!node || isFile(node) || node.data.pendingPermission?.requestId !== requestId) return
+      if (!node || isFile(node) || isLink(node)) return
+      if (node.data.pendingPermission?.requestId !== requestId) return
       // Dismiss immediately; main echoes a permission-resolved event regardless.
       patchData(id, { pendingPermission: undefined })
       window.api.thread.respondPermission({ requestId, allow })
@@ -851,7 +964,7 @@ export const useCanvasStore = create<CanvasState>((set, get) => {
       const s = get()
       const src = s.nodes.find((n) => n.id === sourceId)
       const tgt = s.nodes.find((n) => n.id === chatId)
-      if (!src || !tgt || !(isNote(src) || isFile(src)) || !isChat(tgt)) return
+      if (!src || !tgt || !(isNote(src) || isFile(src) || isLink(src)) || !isChat(tgt)) return
       if (tgt.data.kind === 'research') return
       if (s.edges.some((e) => e.kind === 'context' && e.source === sourceId && e.target === chatId))
         return // already connected
@@ -873,8 +986,8 @@ export const useCanvasStore = create<CanvasState>((set, get) => {
         edges: s.edges.filter((e) => e.source !== id && e.target !== id)
       }))
       if (node && isNote(node)) void window.api.note.delete(id)
-      else if (node && isFile(node)) {
-        // the file stays in the folder
+      else if (node && (isFile(node) || isLink(node))) {
+        // nothing on disk to clean up
       } else void window.api.canvas.deleteThread(id)
       persist()
     },
@@ -949,6 +1062,7 @@ export const useCanvasStore = create<CanvasState>((set, get) => {
       const newFileIds = contextFiles.filter((f) => f.isNew).map((f) => f.id)
       if (newFileIds.length > 0) pendingFileInjections.set(id, newFileIds)
       else pendingFileInjections.delete(id)
+      const contextLinks = contextLinksFor(id)
 
       void window.api.thread.send({
         nodeId: id,
@@ -959,7 +1073,8 @@ export const useCanvasStore = create<CanvasState>((set, get) => {
         ...(!node.data.sessionId && node.data.forkOf ? { forkFrom: node.data.forkOf } : {}),
         ...(node.data.researchArmed ? { research: true } : {}),
         ...(contextNotes.length > 0 ? { contextNotes } : {}),
-        ...(contextFiles.length > 0 ? { contextFiles } : {})
+        ...(contextFiles.length > 0 ? { contextFiles } : {}),
+        ...(contextLinks.length > 0 ? { contextLinks } : {})
       })
     },
 
@@ -1009,6 +1124,7 @@ export const useCanvasStore = create<CanvasState>((set, get) => {
       const newFileIds = contextFiles.filter((f) => f.isNew).map((f) => f.id)
       if (newFileIds.length > 0) pendingFileInjections.set(id, newFileIds)
       else pendingFileInjections.delete(id)
+      const contextLinks = contextLinksFor(id)
       void window.api.thread.send({
         nodeId: id,
         text: lastUser.text,
@@ -1017,7 +1133,8 @@ export const useCanvasStore = create<CanvasState>((set, get) => {
         // the failed turn may have been a fork's first send — fork again
         ...(!node.data.sessionId && node.data.forkOf ? { forkFrom: node.data.forkOf } : {}),
         ...(contextNotes.length > 0 ? { contextNotes } : {}),
-        ...(contextFiles.length > 0 ? { contextFiles } : {})
+        ...(contextFiles.length > 0 ? { contextFiles } : {}),
+        ...(contextLinks.length > 0 ? { contextLinks } : {})
       })
     },
 
@@ -1100,6 +1217,22 @@ export const useCanvasStore = create<CanvasState>((set, get) => {
                 }
               ),
               id: p.id
+            }
+          }
+          if (p.kind === 'link') {
+            const node = makeLinkNode(p.position, {
+              title: p.title,
+              color: p.color,
+              url: p.url,
+              minimized: p.minimized ?? false,
+              ...(p.minimized && p.height != null ? { savedHeight: p.height } : {})
+            })
+            return {
+              ...node,
+              id: p.id,
+              width: p.width,
+              // minimized links collapse to the title row (no explicit height)
+              height: p.height != null && !p.minimized ? p.height : undefined
             }
           }
           if (p.kind === 'note') {
@@ -1233,7 +1366,7 @@ window.api.thread.onEvent((event) => {
     patch(event.nodeId, () => ({ pendingPermission: event.request }))
   } else if (event.type === 'permission-resolved') {
     patch(event.nodeId, (node) =>
-      !isFile(node) && node.data.pendingPermission?.requestId === event.requestId
+      !isFile(node) && !isLink(node) && node.data.pendingPermission?.requestId === event.requestId
         ? { pendingPermission: undefined }
         : {}
     )

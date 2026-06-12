@@ -1,11 +1,27 @@
-import { app, shell, BrowserWindow, dialog, ipcMain, safeStorage } from 'electron'
+import {
+  app,
+  shell,
+  BrowserWindow,
+  clipboard,
+  dialog,
+  ipcMain,
+  safeStorage,
+  session
+} from 'electron'
 import { randomUUID } from 'crypto'
 import { promises as fs, readFileSync, constants as fsConstants } from 'fs'
+import { tmpdir } from 'os'
 import { basename, extname, isAbsolute, join, relative, resolve } from 'path'
 import { electronApp, optimizer, is } from '@electron-toolkit/utils'
 import { query, type SDKUserMessage } from '@anthropic-ai/claude-agent-sdk'
 import icon from '../../resources/icon.png?asset'
-import { DEFAULT_MODEL, MODEL_OPTIONS, TITLE_MODEL } from '../shared/types'
+import {
+  BROWSE_PARTITION,
+  DEFAULT_MODEL,
+  DEFAULT_PERMISSION_SETTINGS,
+  MODEL_OPTIONS,
+  TITLE_MODEL
+} from '../shared/types'
 import type {
   AuthStatus,
   CanvasDoc,
@@ -13,6 +29,7 @@ import type {
   FolderState,
   ModelId,
   PermissionReply,
+  PermissionSettings,
   PersistedMessage,
   ThreadDoc,
   ThreadEvent,
@@ -185,6 +202,26 @@ const imageMimeFor = (file: string): ImageMime | null => {
 // past this a PDF can't reach the model, so refuse it at pick time.
 const MAX_PDF_BYTES = 20 * 1024 * 1024
 
+// Link-node URLs come from the renderer's own normalizer, but re-check here
+// since they steer an auto-approved WebFetch.
+const isHttpUrl = (url: string): boolean => {
+  try {
+    const u = new URL(url)
+    return u.protocol === 'http:' || u.protocol === 'https:'
+  } catch {
+    return false
+  }
+}
+
+/** The URL's origin, or null if unparsable. */
+const originOf = (url: string): string | null => {
+  try {
+    return new URL(url).origin
+  } catch {
+    return null
+  }
+}
+
 // File-node paths round-trip through canvas.json — accept only relative
 // paths that stay inside the root, with no hidden or parent segments.
 const isSafeFileRel = (rel: string): boolean =>
@@ -252,6 +289,29 @@ function registerFileIpc(): void {
   ipcMain.handle('file:fromPath', async (_event, path: string): Promise<ChosenFile | null> => {
     if (!folderRoot || typeof path !== 'string' || !isAbsolute(path)) return null
     return chosenFileFor(path)
+  })
+
+  // A photo on the clipboard (a screenshot, an image copied out of a
+  // browser) — staged to a temp file so the regular attach flow can copy it
+  // into the folder under a free name, exactly like a picked or dropped one.
+  ipcMain.handle('file:fromClipboard', async (): Promise<ChosenFile | null> => {
+    if (!folderRoot) return null
+    const image = clipboard.readImage()
+    if (image.isEmpty()) return null
+    try {
+      const png = image.toPNG()
+      const dir = await fs.mkdtemp(join(tmpdir(), 'bee-claude-paste-'))
+      const sourcePath = join(dir, 'Pasted image.png')
+      await fs.writeFile(sourcePath, png)
+      return {
+        sourcePath,
+        name: 'Pasted image.png',
+        kind: 'image',
+        dataUrl: `data:image/png;base64,${png.toString('base64')}`
+      }
+    } catch {
+      return null
+    }
   })
 
   // Bytes for the renderer's inline PDF viewer (pdf.js renders pages onto
@@ -452,6 +512,61 @@ function registerAuthIpc(): void {
   })
 }
 
+// --- Global permission settings -----------------------------------------
+// App-wide auto-allow preferences, persisted in userData. Enforced inside
+// canUseTool, so a change applies to the very next tool call — and any
+// prompt already waiting on screen that the new settings cover is resolved
+// on the spot (canUseTool's own permission-resolved emit dismisses it).
+
+const permissionsFile = (): string => join(app.getPath('userData'), 'permissions.json')
+
+let permissionSettings: PermissionSettings = { ...DEFAULT_PERMISSION_SETTINGS }
+
+async function readPermissionSettings(): Promise<PermissionSettings> {
+  try {
+    const raw = JSON.parse(await fs.readFile(permissionsFile(), 'utf8'))
+    return {
+      allowWebSearch: raw.allowWebSearch === true,
+      autoAllowAll: raw.autoAllowAll === true
+    }
+  } catch {
+    return { ...DEFAULT_PERMISSION_SETTINGS }
+  }
+}
+
+function autoAllowed(toolName: string): boolean {
+  if (permissionSettings.autoAllowAll) return true
+  return permissionSettings.allowWebSearch && (toolName === 'WebSearch' || toolName === 'WebFetch')
+}
+
+// Permission requests in flight: requestId → the tool asked about and the
+// resolver for the user's verdict. canUseTool blocks the SDK turn until the
+// renderer answers via thread:permission (or a settings change covers it).
+const pendingPermissions = new Map<
+  string,
+  { toolName: string; resolve: (allow: boolean) => void }
+>()
+
+function registerPermissionSettingsIpc(): void {
+  ipcMain.handle('settings:permissions:get', (): PermissionSettings => permissionSettings)
+
+  ipcMain.handle(
+    'settings:permissions:set',
+    async (_event, patch: Partial<PermissionSettings>): Promise<PermissionSettings> => {
+      permissionSettings = {
+        allowWebSearch: patch.allowWebSearch ?? permissionSettings.allowWebSearch,
+        autoAllowAll: patch.autoAllowAll ?? permissionSettings.autoAllowAll
+      }
+      await fs.writeFile(permissionsFile(), JSON.stringify(permissionSettings, null, 2))
+      // Settle any prompt the new settings already answer.
+      for (const { toolName, resolve } of pendingPermissions.values()) {
+        if (autoAllowed(toolName)) resolve(true)
+      }
+      return permissionSettings
+    }
+  )
+}
+
 // Research mode: the lead agent of a chat turn may spawn these subagents.
 // Each spawn renders as a display-only child node on the canvas.
 const RESEARCHER_DEF = {
@@ -507,12 +622,8 @@ function registerThreadIpc(): void {
     return null
   })
 
-  // Permission requests in flight: requestId → resolver for the user's verdict.
-  // canUseTool blocks the SDK turn until the renderer answers via thread:permission.
-  const pendingPermissions = new Map<string, (allow: boolean) => void>()
-
   ipcMain.on('thread:permission', (_event, { requestId, allow }: PermissionReply) => {
-    pendingPermissions.get(requestId)?.(allow)
+    pendingPermissions.get(requestId)?.resolve(allow)
   })
 
   // File-mutating tools a note session may only point at its own file.
@@ -532,7 +643,8 @@ function registerThreadIpc(): void {
         research,
         model,
         contextNotes,
-        contextFiles
+        contextFiles,
+        contextLinks
       }: ThreadSendArgs
     ) => {
       // The renderer sends an id from MODEL_OPTIONS; anything else falls back.
@@ -614,7 +726,34 @@ function registerThreadIpc(): void {
               'messages themselves — answer from what you see in them. Never try ' +
               'to read them from disk or search the project for them.'
             : ''
-        const systemAppend = [contextAppend, filesAppend, research ? RESEARCH_APPEND : '']
+        // Connected links carry no content at all — just the URL in the
+        // system prompt plus an instruction to WebFetch it before the first
+        // answer. The fetched page lands in the session transcript, so later
+        // turns (which resume the session) already hold it — the "unless
+        // already fetched" clause is what stands in for injectedImages-style
+        // bookkeeping. Deliberately no pre-fetching or caching on the node:
+        // the fetch happens in the open, as a visible tool call.
+        const validLinks = (contextLinks ?? []).filter(
+          (l) => typeof l.url === 'string' && isHttpUrl(l.url)
+        )
+        const linksAppend =
+          validLinks.length > 0
+            ? 'The user attached web pages to this conversation:\n' +
+              validLinks
+                .map(
+                  (l) => `<page title=${JSON.stringify(l.title)} url=${JSON.stringify(l.url)} />`
+                )
+                .join('\n') +
+              '\nBefore answering, fetch each attached page with WebFetch — unless this ' +
+              'conversation already contains its fetched content from an earlier turn ' +
+              '(never re-fetch a page you already hold). Answer from the fetched content.'
+            : ''
+        const systemAppend = [
+          contextAppend,
+          filesAppend,
+          linksAppend,
+          research ? RESEARCH_APPEND : ''
+        ]
           .filter(Boolean)
           .join('\n\n')
 
@@ -622,6 +761,8 @@ function registerThreadIpc(): void {
           ? `You are connected to the markdown note "${noteTitle || 'Untitled'}" at ${notePath}. ` +
             `Apply the instruction below by editing that file directly — use the Edit tool ` +
             `(or Write if the file is empty). Never create or modify any other file. ` +
+            `Write each paragraph as one long line — never hard-wrap prose at a column ` +
+            `width or end lines with trailing spaces; the note editor wraps text to fit. ` +
             `Keep your text reply to a sentence or two; the edits speak for themselves.` +
             `\n\nInstruction: ${text}`
           : text
@@ -712,13 +853,26 @@ function registerThreadIpc(): void {
                       message: `This session may only edit the note file at ${notePath}.`
                     }
               }
+              // Global auto-allows answer without a prompt. (The note-file
+              // guard above still wins for note sessions' edit tools.)
+              if (autoAllowed(toolName)) return { behavior: 'allow', updatedInput: input }
+              // Connecting a link node IS consent to fetch it — the system
+              // prompt told the model to WebFetch the page, so prompting here
+              // would make the feature feel broken. Same-origin (not just the
+              // exact URL) so redirects and normalized variants stay quiet;
+              // fetches anywhere else still prompt below.
+              if (toolName === 'WebFetch' && typeof input.url === 'string') {
+                const origin = originOf(input.url)
+                if (origin && validLinks.some((l) => originOf(l.url) === origin))
+                  return { behavior: 'allow', updatedInput: input }
+              }
               const requestId = randomUUID()
               const allow = await new Promise<boolean>((resolveVerdict) => {
                 if (wc.isDestroyed()) {
                   resolveVerdict(false)
                   return
                 }
-                pendingPermissions.set(requestId, resolveVerdict)
+                pendingPermissions.set(requestId, { toolName, resolve: resolveVerdict })
                 signal.addEventListener('abort', () => resolveVerdict(false), { once: true })
                 emit({
                   nodeId,
@@ -997,6 +1151,7 @@ function registerCanvasIpc(): void {
       await Promise.all(
         doc.nodes.map(async (node) => {
           if (!isSafeNodeId(node.id)) return
+          if (node.kind === 'link') return // the URL rides canvas.json itself
           if (node.kind === 'file') {
             if (node.file && isSafeFileRel(node.file)) {
               node.dataUrl = await imageDataUrl(root, node.file)
@@ -1063,7 +1218,10 @@ function createWindow(): void {
     ...(process.platform === 'linux' ? { icon } : {}),
     webPreferences: {
       preload: join(__dirname, '../preload/index.js'),
-      sandbox: false
+      sandbox: false,
+      // tab nodes embed web pages in <webview> guests (hardened below in
+      // the app-wide web-contents-created hook)
+      webviewTag: true
     }
   })
 
@@ -1099,12 +1257,44 @@ app.whenReady().then(async () => {
     optimizer.watchWindowShortcuts(window)
   })
 
+  // Tab nodes run remote pages in <webview> guests. Lock every guest down:
+  // no preload, no node access, http(s) URLs only — and anything a page tries
+  // to pop open goes to the system browser instead of a new window.
+  app.on('web-contents-created', (_event, contents) => {
+    contents.on('will-attach-webview', (event, webPreferences, params) => {
+      delete webPreferences.preload
+      webPreferences.nodeIntegration = false
+      webPreferences.contextIsolation = true
+      if (!/^https?:\/\//i.test(params.src ?? '')) event.preventDefault()
+    })
+    if (contents.getType() === 'webview') {
+      contents.setWindowOpenHandler(({ url }) => {
+        if (/^https?:\/\//i.test(url)) {
+          // A tab node is one tab on purpose: anything its page tries to pop
+          // open (target=_blank, window.open) navigates that tab's own guest
+          // instead. Any guest outside the browse partition (none today)
+          // hands pop-opens to the system browser. fromPartition returns the
+          // same Session object for the same name, so identity comparison
+          // is sound.
+          if (contents.session === session.fromPartition(BROWSE_PARTITION)) {
+            void contents.loadURL(url)
+          } else {
+            void shell.openExternal(url)
+          }
+        }
+        return { action: 'deny' }
+      })
+    }
+  })
+
   loadDotEnv()
 
   // Decide auth before any SDK call: stored subscription token beats .env key.
   envApiKey = process.env.ANTHROPIC_API_KEY
   oauthToken = await readStoredToken()
   applyAuthEnv()
+
+  permissionSettings = await readPermissionSettings()
 
   // Reopen the folder from last time if it still exists.
   const settings = await readSettings()
@@ -1116,6 +1306,7 @@ app.whenReady().then(async () => {
   registerThreadIpc()
   registerFolderIpc()
   registerAuthIpc()
+  registerPermissionSettingsIpc()
 
   createWindow()
 
