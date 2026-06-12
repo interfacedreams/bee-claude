@@ -1,18 +1,21 @@
 import { useEffect, useRef, useState } from 'react'
 import { getBezierPath, Position, useReactFlow, ViewportPortal } from '@xyflow/react'
-import { useCanvasStore, isChat, isNote, NODE_W, type CanvasNode } from '../store/canvas'
+import { useCanvasStore, isChat, isFile, isNote, NODE_W, type CanvasNode } from '../store/canvas'
 import { paletteFor } from '../lib/palette'
 
-// Click-to-connect: once a note's circle is tapped (ctxConnectSource in the
-// store), this overlay draws a faded context arrow from that circle to the
-// cursor. Landing on a chat snaps the arrow onto its circle — where it stays,
-// pulsing, until the cursor strays — and a click commits the connection.
+// Click-to-connect: once a note's or image's circle is tapped (ctxConnectSource
+// in the store), this overlay draws a faded context arrow from that circle to
+// the cursor. Landing on a chat snaps the arrow onto its circle — where it
+// stays, pulsing, until the cursor strays — and a click commits the connection.
 // Any other click, or Escape, cancels.
 
-// Circle geometry mirrors ctxHandleStyle: center 30px outside the node edge
+// Context sources: anything with a bottom circle that can feed a chat.
+const isCtxSource = (n: CanvasNode): boolean => isNote(n) || isFile(n)
+
+// Circle geometry mirrors ctxHandleStyle: center 15px outside the node edge
 // (above for chats, below for notes), radius 12 — the pending arrow runs from
 // the note circle's bottom to the chat circle's top like a committed edge.
-const CIRCLE_OFFSET = 30
+const CIRCLE_OFFSET = 15
 const CIRCLE_R = 12
 // Snap radius is SCREEN px (divided by zoom before hit-testing) so the
 // reach feels the same at every zoom level. The snap zone is a tight halo
@@ -32,7 +35,7 @@ const chatCircleCenter = (n: CanvasNode): { x: number; y: number } => ({
 // instead of digging into it (matches ContextEdge's TARGET_GAP).
 const chatCircleTop = (n: CanvasNode): { x: number; y: number } => ({
   x: nodeCx(n),
-  y: n.position.y - CIRCLE_OFFSET - CIRCLE_R - 8
+  y: n.position.y - CIRCLE_OFFSET - CIRCLE_R - 3
 })
 
 // notes: circle below the bottom edge — the arrow leaves from its bottom
@@ -58,9 +61,9 @@ function PendingArrow({ sourceId }: { sourceId: string }): React.JSX.Element | n
     snapId ? s.nodes.find((n) => n.id === snapId) : undefined
   )
 
-  // Stale-source guard: the note got deleted (or the folder switched) — stand down.
+  // Stale-source guard: the source got deleted (or the folder switched) — stand down.
   useEffect(() => {
-    if (!sourceNode || !isNote(sourceNode)) setCtxConnectSource(null)
+    if (!sourceNode || !isCtxSource(sourceNode)) setCtxConnectSource(null)
   }, [sourceNode, setCtxConnectSource])
 
   // Follow the cursor and resolve the snap target: the topmost chat whose
@@ -107,7 +110,7 @@ function PendingArrow({ sourceId }: { sourceId: string }): React.JSX.Element | n
     }
   }, [addContextEdge, setCtxConnectSource, sourceId])
 
-  if (!sourceNode || !isNote(sourceNode)) return null
+  if (!sourceNode || !isCtxSource(sourceNode)) return null
   const snapped = snapId && targetNode ? targetNode : null
   const t = snapped ? chatCircleTop(snapped) : cursor
   if (!t) return null // no cursor fix yet — nothing to draw
@@ -177,6 +180,6 @@ function PendingArrow({ sourceId }: { sourceId: string }): React.JSX.Element | n
 export default function ContextConnectOverlay(): React.JSX.Element | null {
   const sourceId = useCanvasStore((s) => s.ctxConnectSource)
   if (!sourceId) return null
-  // Keyed so arming a different note restarts with fresh cursor/snap state.
+  // Keyed so arming a different source restarts with fresh cursor/snap state.
   return <PendingArrow key={sourceId} sourceId={sourceId} />
 }

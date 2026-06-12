@@ -1,17 +1,16 @@
 import { app, shell, BrowserWindow, dialog, ipcMain } from 'electron'
 import { randomUUID } from 'crypto'
-import { promises as fs, readFileSync } from 'fs'
-import { basename, join, resolve } from 'path'
+import { promises as fs, readFileSync, constants as fsConstants } from 'fs'
+import { basename, extname, isAbsolute, join, relative, resolve } from 'path'
 import { electronApp, optimizer, is } from '@electron-toolkit/utils'
-import { query } from '@anthropic-ai/claude-agent-sdk'
+import { query, type SDKUserMessage } from '@anthropic-ai/claude-agent-sdk'
 import icon from '../../resources/icon.png?asset'
 import { DEFAULT_MODEL, MODEL_OPTIONS, TITLE_MODEL } from '../shared/types'
 import type {
   CanvasDoc,
+  ChosenFile,
   FolderState,
   ModelId,
-  NoteDoc,
-  NoteVersion,
   PermissionReply,
   PersistedMessage,
   ThreadDoc,
@@ -48,11 +47,12 @@ const canvasFileFor = (root: string): string => join(root, '.canvas', 'canvas.js
 const threadsDirFor = (root: string): string => join(root, '.canvas', 'threads')
 const threadFileFor = (root: string, nodeId: string): string =>
   join(threadsDirFor(root), `${nodeId}.json`)
-// Version sidecars (and pre-migration note bodies) live here, keyed by node id.
+// Pre-migration note bodies (and now-retired version sidecars) live here,
+// keyed by node id.
 const noteMetaDirFor = (root: string): string => join(root, '.canvas', 'notes')
 const legacyNoteFileFor = (root: string, nodeId: string): string =>
   join(noteMetaDirFor(root), `${nodeId}.md`)
-const noteVersionsFileFor = (root: string, nodeId: string): string =>
+const legacyNoteVersionsFileFor = (root: string, nodeId: string): string =>
   join(noteMetaDirFor(root), `${nodeId}.versions.json`)
 
 // Node ids come from the renderer over IPC — keep them path-segment safe.
@@ -157,45 +157,100 @@ async function readTextIfExists(path: string): Promise<string> {
   }
 }
 
-async function readNoteVersions(root: string, nodeId: string): Promise<NoteVersion[]> {
+// --- File nodes -----------------------------------------------------------
+// An image node references a file inside the folder by relative path. Picking
+// a file outside the folder copies it to the root; one already inside is
+// referenced where it sits. Deleting a node never deletes the image file.
+
+type ImageMime = 'image/png' | 'image/jpeg'
+const IMAGE_MIME: Record<string, ImageMime> = {
+  png: 'image/png',
+  jpg: 'image/jpeg',
+  jpeg: 'image/jpeg'
+}
+
+const imageMimeFor = (file: string): ImageMime | null =>
+  IMAGE_MIME[extname(file).slice(1).toLowerCase()] ?? null
+
+// File-node paths round-trip through canvas.json — accept only relative
+// paths that stay inside the root, with no hidden or parent segments.
+const isSafeFileRel = (rel: string): boolean =>
+  rel.length > 0 &&
+  !rel.includes('\\') &&
+  rel.split('/').every((seg) => seg !== '' && !seg.startsWith('.'))
+
+async function imageDataUrl(root: string, rel: string): Promise<string | undefined> {
+  const mime = imageMimeFor(rel)
+  if (!mime) return undefined
   try {
-    const doc: NoteDoc = JSON.parse(await fs.readFile(noteVersionsFileFor(root, nodeId), 'utf8'))
-    return doc.versions
+    const buf = await fs.readFile(join(root, rel))
+    return `data:${mime};base64,${buf.toString('base64')}`
   } catch {
-    return []
+    return undefined // moved or deleted — the node renders a missing-image placeholder
   }
 }
 
-async function writeNoteVersions(
-  root: string,
-  nodeId: string,
-  versions: NoteVersion[]
-): Promise<void> {
-  await fs.mkdir(noteMetaDirFor(root), { recursive: true })
-  const doc: NoteDoc = { version: 1, versions }
-  await fs.writeFile(noteVersionsFileFor(root, nodeId), JSON.stringify(doc, null, 2))
-}
+function registerFileIpc(): void {
+  // Pick an image. Returns the source path (attached on placement) plus a
+  // data URL so the renderer can preview and measure it before placing.
+  ipcMain.handle('file:choose', async (event): Promise<ChosenFile | null> => {
+    if (!folderRoot) return null
+    const win = BrowserWindow.fromWebContents(event.sender)
+    const options = {
+      title: 'Add an image',
+      properties: ['openFile' as const],
+      filters: [{ name: 'Images', extensions: ['png', 'jpg', 'jpeg'] }]
+    }
+    const res = win
+      ? await dialog.showOpenDialog(win, options)
+      : await dialog.showOpenDialog(options)
+    if (res.canceled || res.filePaths.length === 0) return null
+    const path = res.filePaths[0]
+    const mime = imageMimeFor(path)
+    if (!mime) return null
+    try {
+      const buf = await fs.readFile(path)
+      return {
+        sourcePath: path,
+        name: basename(path),
+        dataUrl: `data:${mime};base64,${buf.toString('base64')}`
+      }
+    } catch {
+      return null
+    }
+  })
 
-/**
- * Version boundary: snapshot the note's live content if it has drifted from
- * the latest version. Called with 'user' before an AI turn (so unversioned
- * user edits become their own version) and 'ai' after one.
- */
-async function snapshotNote(
-  root: string,
-  nodeId: string,
-  author: NoteVersion['author']
-): Promise<NoteVersion[]> {
-  const path = notePathFor(root, nodeId)
-  const content = path ? await readTextIfExists(path) : ''
-  const versions = await readNoteVersions(root, nodeId)
-  const last = versions[versions.length - 1]
-  const drifted = last ? last.content !== content : content !== ''
-  if (drifted) {
-    versions.push({ content, author, at: new Date().toISOString() })
-    await writeNoteVersions(root, nodeId, versions)
-  }
-  return versions
+  // The node was placed — make the image part of the folder. Inside the root
+  // it's referenced in place; outside, copied in under a free name.
+  ipcMain.handle(
+    'file:attach',
+    async (_event, sourcePath: string): Promise<{ file: string } | null> => {
+      const root = folderRoot
+      if (!root || typeof sourcePath !== 'string' || !imageMimeFor(sourcePath)) return null
+      const src = resolve(sourcePath)
+      const rel = relative(root, src)
+      if (!rel.startsWith('..') && !isAbsolute(rel)) {
+        return isSafeFileRel(rel) ? { file: rel } : null
+      }
+      const ext = extname(src)
+      const base = sanitizeTitle(basename(src, ext)) || 'image'
+      try {
+        for (let n = 1; n <= 200; n++) {
+          const file = n === 1 ? `${base}${ext}` : `${base} ${n}${ext}`
+          try {
+            // COPYFILE_EXCL refuses to overwrite — the no-clobber guarantee
+            await fs.copyFile(src, join(root, file), fsConstants.COPYFILE_EXCL)
+            return { file }
+          } catch (err) {
+            if ((err as NodeJS.ErrnoException).code !== 'EEXIST') throw err
+          }
+        }
+      } catch {
+        // unreadable source or unwritable root — the node keeps its preview only
+      }
+      return null
+    }
+  )
 }
 
 async function dirExists(path: string): Promise<boolean> {
@@ -356,7 +411,8 @@ function registerThreadIpc(): void {
         noteTitle,
         research,
         model,
-        contextNotes
+        contextNotes,
+        contextImages
       }: ThreadSendArgs
     ) => {
       // The renderer sends an id from MODEL_OPTIONS; anything else falls back.
@@ -393,8 +449,6 @@ function registerThreadIpc(): void {
           } catch {
             await fs.writeFile(notePath, '')
           }
-          // Unversioned user edits become their own version before the AI touches it.
-          await snapshotNote(root, nodeId, 'user')
         }
 
         // Connected notes ride the system prompt, re-read from the canvas on
@@ -421,7 +475,23 @@ function registerThreadIpc(): void {
                 })
                 .join('\n')
             : ''
-        const systemAppend = [contextAppend, research ? RESEARCH_APPEND : '']
+        // Connected images live IN the conversation, not the system prompt
+        // (the API's system prompt is text-only): an image newly connected
+        // since the session last saw it rides this turn's user message as a
+        // real image block — once. Later turns resume the session, which
+        // already holds the pixels, so the system prompt only lists titles.
+        const validImages = (contextImages ?? []).filter(
+          (img) => typeof img.file === 'string' && isSafeFileRel(img.file)
+        )
+        const imagesAppend =
+          validImages.length > 0
+            ? 'The user attached images to this conversation: ' +
+              validImages.map((img) => JSON.stringify(img.title)).join(', ') +
+              '. They are included as image attachments inside the conversation ' +
+              'messages themselves — answer from what you see in them. Never try ' +
+              'to read them from disk or search the project for them.'
+            : ''
+        const systemAppend = [contextAppend, imagesAppend, research ? RESEARCH_APPEND : '']
           .filter(Boolean)
           .join('\n\n')
 
@@ -433,8 +503,46 @@ function registerThreadIpc(): void {
             `\n\nInstruction: ${text}`
           : text
 
+        // Bytes for the images this turn introduces, each behind a title label
+        // so the model can tell which attachment is which.
+        const imageBlocks: Array<
+          | { type: 'text'; text: string }
+          | { type: 'image'; source: { type: 'base64'; media_type: ImageMime; data: string } }
+        > = []
+        for (const img of notePath ? [] : validImages.filter((i) => i.isNew)) {
+          const mime = imageMimeFor(img.file)
+          if (!mime) continue
+          try {
+            const data = await fs.readFile(join(root, img.file))
+            imageBlocks.push({ type: 'text', text: `Attached image: ${JSON.stringify(img.title)}` })
+            imageBlocks.push({
+              type: 'image',
+              source: { type: 'base64', media_type: mime, data: data.toString('base64') }
+            })
+          } catch {
+            // unreadable — it stays listed in the system prompt; the model can say so
+          }
+        }
+
+        // String prompts can't carry image blocks — when this turn injects
+        // images, hand the SDK a one-message input stream instead.
+        const promptInput =
+          imageBlocks.length > 0
+            ? (async function* (): AsyncGenerator<SDKUserMessage> {
+                yield {
+                  type: 'user',
+                  message: {
+                    role: 'user',
+                    content: [...imageBlocks, { type: 'text', text: prompt }]
+                  },
+                  parent_tool_use_id: null,
+                  session_id: '' // stamped by the SDK
+                }
+              })()
+            : prompt
+
         const turn = query({
-          prompt,
+          prompt: promptInput,
           options: {
             cwd: root,
             model: turnModel,
@@ -599,12 +707,9 @@ function registerThreadIpc(): void {
                 ` cache_create=${u.cache_creation_input_tokens} out=${u.output_tokens}` +
                 ` cost=$${msg.total_cost_usd.toFixed(4)}`
             )
-            // The turn is the version boundary: however many edits it made, they
-            // land as one snapshot.
-            let note: { content: string; versions: NoteVersion[] } | undefined
+            let note: { content: string } | undefined
             if (notePath) {
-              const versions = await snapshotNote(root, nodeId, 'ai')
-              note = { content: await readTextIfExists(notePath), versions }
+              note = { content: await readTextIfExists(notePath) }
             }
             emit({
               nodeId,
@@ -624,16 +729,11 @@ function registerThreadIpc(): void {
           }
         }
       } catch (err) {
-        // A turn that died mid-edit may have changed the note — version whatever
-        // landed so nothing is silently lost.
-        let note: { content: string; versions: NoteVersion[] } | undefined
+        // A turn that died mid-edit may have changed the note — mirror whatever
+        // landed so the renderer isn't left stale.
+        let note: { content: string } | undefined
         if (notePath) {
-          try {
-            const versions = await snapshotNote(root, nodeId, 'ai')
-            note = { content: await readTextIfExists(notePath), versions }
-          } catch {
-            // report the original error regardless
-          }
+          note = { content: await readTextIfExists(notePath) }
         }
         emit({ nodeId, type: 'done', ok: false, error: String(err), ...(note ? { note } : {}) })
       }
@@ -677,26 +777,6 @@ function registerNoteIpc(): void {
     if (path) await fs.writeFile(path, content)
   })
 
-  // Make an old version the live content again. Unversioned edits are
-  // snapshotted first, so restoring never destroys anything.
-  ipcMain.handle(
-    'note:restore',
-    async (
-      _event,
-      nodeId: string,
-      index: number
-    ): Promise<{ content: string; versions: NoteVersion[] } | null> => {
-      const root = folderRoot
-      const path = root && isSafeNodeId(nodeId) ? notePathFor(root, nodeId) : null
-      if (!root || !path) return null
-      const versions = await snapshotNote(root, nodeId, 'user')
-      const target = versions[index]
-      if (!target) return null
-      await fs.writeFile(path, target.content)
-      return { content: target.content, versions }
-    }
-  )
-
   ipcMain.handle('note:delete', async (_event, nodeId: string): Promise<void> => {
     const root = folderRoot
     if (!root || !isSafeNodeId(nodeId)) return
@@ -704,8 +784,8 @@ function registerNoteIpc(): void {
     noteFiles.delete(nodeId)
     const doomed = [
       ...(path ? [path] : []),
-      legacyNoteFileFor(root, nodeId), // pre-migration leftover, if any
-      noteVersionsFileFor(root, nodeId)
+      legacyNoteFileFor(root, nodeId), // pre-migration leftovers, if any
+      legacyNoteVersionsFileFor(root, nodeId)
     ]
     for (const file of doomed) {
       try {
@@ -728,9 +808,14 @@ async function writeCanvasFile(root: string, doc: CanvasDoc): Promise<void> {
       const copy = { ...node }
       delete copy.messages
       delete copy.content
-      delete copy.noteVersions
       delete copy.file
-      const file = node.kind === 'note' ? noteFiles.get(node.id) : undefined
+      delete copy.dataUrl
+      const file =
+        node.kind === 'note'
+          ? noteFiles.get(node.id)
+          : node.kind === 'file' && node.file && isSafeFileRel(node.file)
+            ? node.file
+            : undefined
       if (file) copy.file = file
       return copy
     })
@@ -773,10 +858,15 @@ function registerCanvasIpc(): void {
       await Promise.all(
         doc.nodes.map(async (node) => {
           if (!isSafeNodeId(node.id)) return
+          if (node.kind === 'file') {
+            if (node.file && isSafeFileRel(node.file)) {
+              node.dataUrl = await imageDataUrl(root, node.file)
+            }
+            return
+          }
           if (node.kind === 'note') {
             const path = notePathFor(root, node.id)
             node.content = path ? await readTextIfExists(path) : ''
-            node.noteVersions = await readNoteVersions(root, node.id)
             return
           }
           try {
@@ -874,6 +964,7 @@ app.whenReady().then(async () => {
 
   registerCanvasIpc()
   registerNoteIpc()
+  registerFileIpc()
   registerThreadIpc()
   registerFolderIpc()
 

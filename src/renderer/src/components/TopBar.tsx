@@ -35,7 +35,9 @@ export default function TopBar(): React.JSX.Element {
             <button
               type="button"
               onClick={() => spawn('chat')}
-              title={placing === 'chat' ? 'Click the canvas to place — Esc cancels' : 'New chat (C)'}
+              title={
+                placing === 'chat' ? 'Click the canvas to place — Esc cancels' : 'New chat (C)'
+              }
               className={`${SPAWN_BUTTON} ${placing === 'chat' ? SPAWN_ARMED : SPAWN_IDLE}`}
             >
               <span>New Chat</span>
@@ -44,11 +46,24 @@ export default function TopBar(): React.JSX.Element {
             <button
               type="button"
               onClick={() => spawn('note')}
-              title={placing === 'note' ? 'Click the canvas to place — Esc cancels' : 'New note (N)'}
+              title={
+                placing === 'note' ? 'Click the canvas to place — Esc cancels' : 'New note (N)'
+              }
               className={`${SPAWN_BUTTON} ${placing === 'note' ? SPAWN_ARMED : SPAWN_IDLE}`}
             >
               <span>New Note</span>
               <span className={KEYCAP}>N</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => spawn('file')}
+              title={
+                placing === 'file' ? 'Click the canvas to place — Esc cancels' : 'Add a file (F)'
+              }
+              className={`${SPAWN_BUTTON} ${placing === 'file' ? SPAWN_ARMED : SPAWN_IDLE}`}
+            >
+              <span>Add File</span>
+              <span className={KEYCAP}>F</span>
             </button>
           </>
         )}

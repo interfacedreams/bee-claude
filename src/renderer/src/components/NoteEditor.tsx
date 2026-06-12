@@ -17,9 +17,9 @@ interface NoteEditorProps {
 }
 
 // WYSIWYG body for notes. The store keeps plain markdown — the editor parses
-// it on the way in and serializes back on every edit, so persistence, version
-// snapshots, and AI turns (which read/write the note file as markdown) never
-// see ProseMirror documents.
+// it on the way in and serializes back on every edit, so persistence and AI
+// turns (which read/write the note file as markdown) never see ProseMirror
+// documents.
 function NoteEditor({
   content,
   readOnly,
@@ -77,7 +77,7 @@ function NoteEditor({
 
   useImperativeHandle(ref, () => ({ focus: () => editor?.commands.focus('end') }), [editor])
 
-  // Push external content into the editor (AI streaming, restore, version nav).
+  // Push external content into the editor (AI streaming).
   // The user's own keystrokes echo back the exact markdown we just serialized,
   // so they compare equal and skip the reset — the cursor never jumps.
   useEffect(() => {

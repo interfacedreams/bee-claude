@@ -1,16 +1,19 @@
 import { useEffect, useState } from 'react'
-import { useCanvasStore, forkSubtree, isNote } from '../store/canvas'
+import { useCanvasStore, forkSubtree, isFile, isNote } from '../store/canvas'
 
 function Dialog({ pendingId }: { pendingId: string }): React.JSX.Element {
   const cancelDelete = useCanvasStore((s) => s.cancelDelete)
   const deleteChat = useCanvasStore((s) => s.deleteChat)
   const title = useCanvasStore((s) => s.nodes.find((n) => n.id === pendingId)?.data.title ?? '')
-  const note = useCanvasStore((s) => {
+  const kind = useCanvasStore((s) => {
     const n = s.nodes.find((n) => n.id === pendingId)
-    return n ? isNote(n) : false
+    return n && isNote(n) ? 'note' : n && isFile(n) ? 'image' : 'chat'
   })
-  // Only chats fork, so a note never has a subtree to cascade into.
-  const forkCount = useCanvasStore((s) => (note ? 0 : forkSubtree(s.edges, pendingId).size - 1))
+  const note = kind === 'note'
+  // Only chats fork, so notes and images never have a subtree to cascade into.
+  const forkCount = useCanvasStore((s) =>
+    kind === 'chat' ? forkSubtree(s.edges, pendingId).size - 1 : 0
+  )
 
   // "Delete forked chats" is a per-use choice — the dialog is keyed by chat id,
   // so this state mounts fresh (unchecked) every time the modal opens.
@@ -35,18 +38,25 @@ function Dialog({ pendingId }: { pendingId: string }): React.JSX.Element {
         onClick={(e) => e.stopPropagation()}
         className="w-[360px] rounded-[14px] border border-black/10 bg-white p-5 shadow-xl"
       >
-        <h2 className="text-[15px] font-semibold text-neutral-900">
-          Delete this {note ? 'note' : 'chat'}?
-        </h2>
+        <h2 className="text-[15px] font-semibold text-neutral-900">Delete this {kind}?</h2>
         <p className="mt-1.5 text-[13px] leading-relaxed text-neutral-600">
-          {title ? (
+          {kind === 'image' ? (
             <>
-              “{title}” and its {note ? 'version history' : 'messages'}
+              {title ? <>“{title}”</> : 'This image'} will be removed from the canvas. The image
+              file stays in your folder.
             </>
           ) : (
-            <>This {note ? 'note' : 'chat'}</>
-          )}{' '}
-          will be removed from the canvas. This can’t be undone.
+            <>
+              {title ? (
+                <>
+                  “{title}” and its {note ? 'file' : 'messages'}
+                </>
+              ) : (
+                <>This {kind}</>
+              )}{' '}
+              will be removed from the canvas. This can’t be undone.
+            </>
+          )}
         </p>
 
         {forkCount > 0 && (

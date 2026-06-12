@@ -3,14 +3,15 @@ import { X } from 'lucide-react'
 import { useCanvasStore } from '../store/canvas'
 
 /**
- * Context connector: note → chat, bottom circle to top circle, arrowhead on
- * the chat end. While it exists, the note's content rides the chat's system
- * prompt on every send. The midpoint × disconnects it.
+ * Context connector: note/image → chat, bottom circle to top circle, arrowhead
+ * on the chat end. While it exists, the source rides the chat's system prompt
+ * on every send (notes as content, images as Read-able paths). The midpoint ×
+ * disconnects it.
  */
 
 // Stop the arrow just shy of the target circle so the head rests above the
 // white ring instead of digging into it.
-const TARGET_GAP = 8
+const TARGET_GAP = 3
 export default function ContextEdge({
   id,
   sourceX,
@@ -38,7 +39,7 @@ export default function ContextEdge({
         <button
           type="button"
           onClick={() => removeContextEdge(id)}
-          title="Disconnect this note from the chat"
+          title="Disconnect this context from the chat"
           style={{ transform: `translate(-50%, -50%) translate(${labelX}px, ${labelY}px)` }}
           className="nodrag nopan pointer-events-auto absolute flex h-5 w-5 cursor-pointer items-center justify-center rounded-full border border-black/10 bg-white text-neutral-400 shadow-sm transition-colors hover:bg-red-50 hover:text-red-600"
         >

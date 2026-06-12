@@ -13,6 +13,7 @@ import Markdown from 'react-markdown'
 import {
   Expand,
   GitFork,
+  Sparkles,
   Minus,
   Pencil,
   RotateCcw,
@@ -75,6 +76,7 @@ function ChatNodeView({ id, data, selected }: NodeProps<ChatNode>): React.JSX.El
   const retry = useCanvasStore((s) => s.retry)
   const respondPermission = useCanvasStore((s) => s.respondPermission)
   const forkChat = useCanvasStore((s) => s.forkChat)
+  const distillChat = useCanvasStore((s) => s.distillChat)
   const toggleResearch = useCanvasStore((s) => s.toggleResearch)
   const requestDelete = useCanvasStore((s) => s.requestDelete)
   const discardNode = useCanvasStore((s) => s.discardNode)
@@ -233,6 +235,15 @@ function ChatNodeView({ id, data, selected }: NodeProps<ChatNode>): React.JSX.El
     }, 50)
   }
 
+  const distillAndCenter = (): void => {
+    void distillChat(id).then((noteId) => {
+      if (!noteId) return
+      setTimeout(() => {
+        void fitView({ nodes: [{ id: noteId }], duration: 300, padding: 0.1, maxZoom: 1 })
+      }, 50)
+    })
+  }
+
   return (
     <div
       ref={rootRef}
@@ -256,9 +267,10 @@ function ChatNodeView({ id, data, selected }: NodeProps<ChatNode>): React.JSX.El
       {/* invisible anchors so fork edges have somewhere to attach */}
       <Handle type="target" position={Position.Left} isConnectable={false} style={HIDDEN_HANDLE} />
       <Handle type="source" position={Position.Right} isConnectable={false} style={HIDDEN_HANDLE} />
-      {/* the context connector: notes' circles drop here. Receive-only — a
-          context arrow always starts at a note. Research transcripts can't
-          send, so context would never reach a model; they get no circle. */}
+      {/* the context connector: notes' and images' circles drop here.
+          Receive-only — a context arrow always starts at a note or image.
+          Research transcripts can't send, so context would never reach a
+          model; they get no circle. */}
       {!isResearch && (
         <Handle
           id={CTX_HANDLE_ID}
@@ -266,7 +278,7 @@ function ChatNodeView({ id, data, selected }: NodeProps<ChatNode>): React.JSX.El
           position={Position.Top}
           isConnectable
           isConnectableStart={false}
-          title="Drop a note's circle here to attach it as context"
+          title="Drop a note's or image's circle here to attach it as context"
           className="ctx-handle"
           style={ctxHandleStyle(palette.accent)}
         />
@@ -376,6 +388,16 @@ function ChatNodeView({ id, data, selected }: NodeProps<ChatNode>): React.JSX.El
               className={CHIP_BUTTON}
             >
               <Pencil className="h-[25px] w-[25px]" />
+            </button>
+          )}
+          {canFork && (
+            <button
+              type="button"
+              onClick={distillAndCenter}
+              title="Distill the key insights into a new note"
+              className={CHIP_BUTTON}
+            >
+              <Sparkles className="h-[25px] w-[25px]" />
             </button>
           )}
           {canFork && (

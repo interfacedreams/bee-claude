@@ -28,22 +28,8 @@ export interface ForkRef {
 
 // 'research' nodes are display-only researcher transcripts spawned by a
 // research-mode turn — no composer, no forking, no session of their own.
-export type NodeKind = 'chat' | 'note' | 'research'
-
-/** One snapshot in a note's history. A version boundary is the end of an AI
- *  turn — or the start of one, capturing the user's unversioned edits first. */
-export interface NoteVersion {
-  content: string
-  author: 'user' | 'ai'
-  at: string // ISO timestamp
-}
-
-/** A note's version history — .canvas/notes/<nodeId>.versions.json.
- *  The live content is the title-named .md file at the folder root. */
-export interface NoteDoc {
-  version: 1
-  versions: NoteVersion[]
-}
+// 'file' nodes pin an image from the folder onto the canvas.
+export type NodeKind = 'chat' | 'note' | 'research' | 'file'
 
 export interface PersistedNode {
   id: string
@@ -56,17 +42,23 @@ export interface PersistedNode {
   // Notes: the note's markdown file — a title-named filename at the folder
   // root (e.g. "Auth ideas.md"). Owned by the main process: injected into
   // canvas.json on save from its id→file map, never set by the renderer.
+  // File nodes: the image's path relative to the folder root — set by the
+  // renderer after file:attach and round-tripped through canvas.json.
   file?: string
+  // File nodes: the image bytes as a data URL. Hydrated from the file on
+  // load; never written into canvas.json.
+  dataUrl?: string
   // Hydrated from .canvas/threads/<nodeId>.json on load; never written
   // into canvas.json (saved separately so layout saves stay cheap).
   messages?: PersistedMessage[]
-  // Hydrated from the note's file + .canvas/notes/<nodeId>.versions.json on
-  // load; never written into canvas.json.
+  // Hydrated from the note's file on load; never written into canvas.json.
   content?: string
-  noteVersions?: NoteVersion[]
   minimized?: boolean
   sessionId?: string
   forkOf?: ForkRef
+  // Chats: image node ids whose bytes were already injected into this chat's
+  // session — later turns (and reloads) must not re-send them.
+  injectedImages?: string[]
 }
 
 export interface PersistedEdge {
@@ -112,6 +104,16 @@ export const DEFAULT_MODEL: ModelId = 'claude-sonnet-4-6'
 // regardless of the user's picker choice.
 export const TITLE_MODEL: ModelId = 'claude-haiku-4-5'
 
+// --- File IPC (renderer ⇄ main) ---
+
+/** A picked image (file:choose) — previewed and measured before placement;
+ *  the source path is attached (copied/referenced into the folder) on drop. */
+export interface ChosenFile {
+  sourcePath: string
+  name: string
+  dataUrl: string
+}
+
 // --- Thread IPC (renderer ⇄ main) ---
 
 /** A note wired to a chat by a context edge — its content rides the chat's
@@ -122,6 +124,18 @@ export interface ContextNote {
   id: string
   title: string
   content: string
+}
+
+/** An image wired to a chat by a context edge. New images are injected into
+ *  the turn's user message as image blocks (once per session); the system
+ *  prompt just lists what's attached. */
+export interface ContextImage {
+  id: string
+  title: string
+  /** The image's path relative to the folder root. */
+  file: string
+  /** Not yet in this chat's session — this turn carries its bytes. */
+  isNew?: boolean
 }
 
 export interface ThreadSendArgs {
@@ -141,6 +155,8 @@ export interface ThreadSendArgs {
   /** Notes connected to this chat by context edges, freshest content first-hand
    *  from the renderer's store. */
   contextNotes?: ContextNote[]
+  /** Images connected to this chat by context edges. */
+  contextImages?: ContextImage[]
 }
 
 /** A tool call waiting on the user's Allow/Deny (SDK canUseTool round-trip). */
@@ -186,6 +202,6 @@ export type ThreadEvent =
       error?: string
       messageUuid?: string // uuid of the turn's final assistant message (fork anchor)
       usage?: TurnUsage
-      /** Note turns: final content + history after the turn's version snapshot. */
-      note?: { content: string; versions: NoteVersion[] }
+      /** Note turns: the note's settled content after the turn. */
+      note?: { content: string }
     }

@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { useReactFlow, useViewport } from '@xyflow/react'
-import { useCanvasStore, NODE_W } from '../store/canvas'
+import { useCanvasStore, fileFrame, FILE_HEADER_H, NODE_W, type PendingFile } from '../store/canvas'
 import { nextColorId, paletteFor, type NodePalette } from '../lib/palette'
 
 // Where the node lands relative to the click: horizontally centered, with the
@@ -27,9 +27,28 @@ function ChipGhost({ pal }: { pal: NodePalette }): React.JSX.Element {
  */
 export default function PlacementOverlay(): React.JSX.Element | null {
   const placing = useCanvasStore((s) => s.placing)
+  const pendingFile = useCanvasStore((s) => s.pendingFile)
+
+  if (!placing) return null
+  if (placing === 'file' && !pendingFile) return null
+
+  // Keyed by mode: switching what's being placed remounts the overlay, so the
+  // cursor state starts null and the ghost stays hidden until the first
+  // mousemove. Cancelling unmounts it, which resets the same way.
+  return <ArmedOverlay key={placing} placing={placing} pendingFile={pendingFile} />
+}
+
+function ArmedOverlay({
+  placing,
+  pendingFile
+}: {
+  placing: 'chat' | 'note' | 'file'
+  pendingFile: PendingFile | null
+}): React.JSX.Element {
   const setPlacing = useCanvasStore((s) => s.setPlacing)
   const addNodeAt = useCanvasStore((s) => s.addNodeAt)
   const addNoteAt = useCanvasStore((s) => s.addNoteAt)
+  const addFileAt = useCanvasStore((s) => s.addFileAt)
   // The ghost previews the color the node will actually get (palette cycle).
   const color = useCanvasStore((s) => nextColorId(s.nodes[s.nodes.length - 1]?.data.color))
   const { screenToFlowPosition, setCenter } = useReactFlow()
@@ -37,28 +56,35 @@ export default function PlacementOverlay(): React.JSX.Element | null {
   // the ghost so it tracks the canvas without waiting for a mousemove.
   const { zoom } = useViewport()
   const ref = useRef<HTMLDivElement>(null)
+  // Cursor position relative to the overlay (null until it first moves here).
   const [cursor, setCursor] = useState<{ x: number; y: number } | null>(null)
 
   useEffect(() => {
-    if (!placing) return
-    setCursor(null) // ghost stays hidden until the cursor moves over the canvas
     const onKey = (e: KeyboardEvent): void => {
       if (e.key === 'Escape') setPlacing(null)
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [placing, setPlacing])
+  }, [setPlacing])
 
-  if (!placing) return null
+  // Images carry their own frame (natural size, capped); chats and notes
+  // share the standard node width.
+  const ghostW = placing === 'file' && pendingFile ? fileFrame(pendingFile).width : NODE_W
 
   const place = (e: React.MouseEvent): void => {
     const p = screenToFlowPosition({ x: e.clientX, y: e.clientY })
-    const position = { x: p.x - NODE_W / 2, y: p.y - ANCHOR_Y }
-    const node = placing === 'note' ? addNoteAt(position) : addNodeAt(position)
+    const position = { x: p.x - ghostW / 2, y: p.y - ANCHOR_Y }
+    const node =
+      placing === 'file'
+        ? addFileAt(position)
+        : placing === 'note'
+          ? addNoteAt(position)
+          : addNodeAt(position)
     setPlacing(null)
+    if (!node) return
     // Placed while zoomed way out: come in to a readable zoom on the new node.
     if (zoom < 1)
-      void setCenter(node.position.x + NODE_W / 2, node.position.y + 150, {
+      void setCenter(node.position.x + ghostW / 2, node.position.y + 150, {
         zoom: 1,
         duration: 250
       })
@@ -84,15 +110,18 @@ export default function PlacementOverlay(): React.JSX.Element | null {
     )
   }
 
-  const rect = ref.current?.getBoundingClientRect()
   const pal = paletteFor(color)
   const isNote = placing === 'note'
+  const isFile = placing === 'file'
 
   return (
     <div
       ref={ref}
       className="absolute inset-0 z-10 cursor-crosshair overflow-hidden"
-      onMouseMove={(e) => setCursor({ x: e.clientX, y: e.clientY })}
+      onMouseMove={(e) => {
+        const rect = e.currentTarget.getBoundingClientRect()
+        setCursor({ x: e.clientX - rect.left, y: e.clientY - rect.top })
+      }}
       onWheel={forwardWheel}
       onClick={place}
       onContextMenu={(e) => {
@@ -100,27 +129,28 @@ export default function PlacementOverlay(): React.JSX.Element | null {
         setPlacing(null)
       }}
     >
-      {cursor && rect && (
+      {cursor && (
         <>
           <div
             className="pointer-events-none absolute flex flex-col rounded-[14px] border border-dashed opacity-80"
             style={{
-              left: cursor.x - rect.left - (NODE_W / 2) * zoom,
-              top: cursor.y - rect.top - ANCHOR_Y * zoom,
-              width: NODE_W,
+              left: cursor.x - (ghostW / 2) * zoom,
+              top: cursor.y - ANCHOR_Y * zoom,
+              width: ghostW,
               transform: `scale(${zoom})`,
               transformOrigin: 'top left',
               borderColor: pal.accent,
-              // notes are paper under a colored header band; chats are solid post-its
-              backgroundColor: isNote ? '#FFFDF699' : `${pal.bg}99`
+              // notes and files are paper under a colored header band;
+              // chats are solid post-its
+              backgroundColor: isNote || isFile ? '#FFFDF699' : `${pal.bg}99`
             }}
           >
             {/* header band: chips + placeholder title, same boxes as the real node */}
             <div
-              className={`flex items-center gap-2 border-b px-3 py-1.5 ${isNote ? 'rounded-t-[13px]' : ''}`}
+              className={`flex items-center gap-2 border-b px-3 py-1.5 ${isNote || isFile ? 'rounded-t-[13px]' : ''}`}
               style={{
                 borderColor: pal.edge,
-                ...(isNote ? { backgroundColor: `${pal.bg}99` } : {})
+                ...(isNote || isFile ? { backgroundColor: `${pal.bg}99` } : {})
               }}
             >
               <ChipGhost pal={pal} />
@@ -129,7 +159,11 @@ export default function PlacementOverlay(): React.JSX.Element | null {
                 className="min-w-0 flex-1 truncate text-[26px] font-medium opacity-50"
                 style={{ color: pal.deep }}
               >
-                {isNote ? 'Untitled note' : 'New chat'}
+                {isFile
+                  ? pendingFile!.name.replace(/\.[^.]+$/, '')
+                  : isNote
+                    ? 'Untitled note'
+                    : 'New chat'}
               </span>
               <div className="ml-auto flex shrink-0 items-center gap-1">
                 <ChipGhost pal={pal} />
@@ -137,7 +171,16 @@ export default function PlacementOverlay(): React.JSX.Element | null {
               </div>
             </div>
 
-            {isNote ? (
+            {isFile ? (
+              // the image itself, at exactly the size the node will land at
+              <img
+                src={pendingFile!.dataUrl}
+                alt=""
+                draggable={false}
+                className="w-full rounded-b-[13px] object-contain"
+                style={{ height: fileFrame(pendingFile!).height - FILE_HEADER_H }}
+              />
+            ) : isNote ? (
               // body mirrors NoteEditor's reserved blank-note height
               <div className="mx-1 my-1 pb-1">
                 <div className="min-h-[172px] px-3 py-2" />

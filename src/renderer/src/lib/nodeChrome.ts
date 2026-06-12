@@ -11,9 +11,9 @@ export const CHIP_BUTTON =
 export const DRAG_HEADER = 'drag-handle cursor-grab active:cursor-grabbing'
 
 // The context connector: the grabbable circle floating just outside every
-// note (below it) and chat (above it) — so a note sitting above a chat reads
-// as a clean downward flow. Notes drag from theirs; chats receive. One id
-// serves both since handle ids are scoped per node.
+// note and image (below them) and chat (above it) — so a source sitting above
+// a chat reads as a clean downward flow. Notes and images drag from theirs;
+// chats receive. One id serves all since handle ids are scoped per node.
 export const CTX_HANDLE_ID = 'ctx'
 
 // Sizing/placement is inline because React Flow's stylesheet pins handles to
@@ -22,7 +22,7 @@ export const ctxHandleStyle = (
   accent: string,
   side: 'top' | 'bottom' = 'top'
 ): React.CSSProperties => ({
-  ...(side === 'top' ? { top: -30 } : { bottom: -30 }),
+  ...(side === 'top' ? { top: -15 } : { bottom: -15 }),
   left: '50%',
   width: 24,
   height: 24,

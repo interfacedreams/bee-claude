@@ -2,20 +2,28 @@ import { useCallback } from 'react'
 import { useCanvasStore } from '../store/canvas'
 
 /**
- * Arm placement mode for a chat or note: a ghost node sticks to the cursor
- * and the next canvas click places it (PlacementOverlay handles that part).
- * Re-arming the same kind disarms — the buttons and C / N keys toggle.
- * Shared by the new-chat/new-note buttons and the C / N / ⌘N shortcuts.
+ * Arm placement mode for a chat, note, or file: a ghost node sticks to the
+ * cursor and the next canvas click places it (PlacementOverlay handles that
+ * part). Re-arming the same kind disarms — the buttons and C / N / F keys
+ * toggle. Files first detour through the image picker; the ghost arms only
+ * once something was actually picked.
  */
-export function useSpawn(): (kind: 'chat' | 'note') => void {
+export function useSpawn(): (kind: 'chat' | 'note' | 'file') => void {
   const setPlacing = useCanvasStore((s) => s.setPlacing)
+  const startFilePlacement = useCanvasStore((s) => s.startFilePlacement)
 
   return useCallback(
     (kind) => {
       const { folder, placing } = useCanvasStore.getState()
       if (!folder?.current) return
-      setPlacing(placing === kind ? null : kind)
+      if (placing === kind) {
+        setPlacing(null)
+      } else if (kind === 'file') {
+        void startFilePlacement()
+      } else {
+        setPlacing(kind)
+      }
     },
-    [setPlacing]
+    [setPlacing, startFilePlacement]
   )
 }

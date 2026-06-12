@@ -13,6 +13,7 @@ import {
 import '@xyflow/react/dist/style.css'
 import ChatNodeView from './ChatNodeView'
 import NoteNodeView from './NoteNodeView'
+import FileNodeView from './FileNodeView'
 import ForkEdge from './ForkEdge'
 import ContextEdge from './ContextEdge'
 import ContextConnectOverlay from './ContextConnectOverlay'
@@ -25,7 +26,7 @@ import { CTX_HANDLE_ID } from '../lib/nodeChrome'
 import { paletteFor } from '../lib/palette'
 import { useSpawn } from '../lib/useSpawn'
 
-const nodeTypes: NodeTypes = { chat: ChatNodeView, note: NoteNodeView }
+const nodeTypes: NodeTypes = { chat: ChatNodeView, note: NoteNodeView, file: FileNodeView }
 const edgeTypes: EdgeTypes = { fork: ForkEdge, context: ContextEdge }
 
 function CanvasInner(): React.JSX.Element {
@@ -66,15 +67,15 @@ function CanvasInner(): React.JSX.Element {
         }
         return
       }
-      // Bare C / N spawn a chat / note — but only when typing focus is
-      // elsewhere, so the letters still work inside inputs and notes.
+      // Bare C / N / F spawn a chat / note / file — but only when typing focus
+      // is elsewhere, so the letters still work inside inputs and notes.
       if (e.altKey || e.repeat) return
       const t = e.target as HTMLElement
       if (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable) return
       const key = e.key.toLowerCase()
-      if (key === 'c' || key === 'n') {
+      if (key === 'c' || key === 'n' || key === 'f') {
         e.preventDefault()
-        spawn(key === 'n' ? 'note' : 'chat')
+        spawn(key === 'n' ? 'note' : key === 'f' ? 'file' : 'chat')
       }
     }
     window.addEventListener('keydown', onKeyDown)
@@ -82,9 +83,9 @@ function CanvasInner(): React.JSX.Element {
   }, [fitView, spawn])
 
   // Releasing a connection drag on (or near — connectionRadius snaps) a
-  // chat's circle commits the note → chat context link. Only note circles
-  // can start a drag and only chat circles can end one, so source/target
-  // here are already the right kinds; the store re-validates anyway.
+  // chat's circle commits the note/image → chat context link. Only note and
+  // image circles can start a drag and only chat circles can end one, so
+  // source/target here are already the right kinds; the store re-validates.
   const handleConnect = useCallback(
     (conn: Connection) => {
       addContextEdge(conn.source, conn.target)
@@ -171,7 +172,7 @@ function CanvasInner(): React.JSX.Element {
             onMoveEnd={(_, vp) => setStoreViewport(vp)}
             onDoubleClick={handleDoubleClick}
           >
-            <Background variant={BackgroundVariant.Dots} gap={24} size={1.5} color="#E2DAC0" />
+            <Background variant={BackgroundVariant.Dots} gap={44} size={2.5} color="#CFC49F" />
             <ContextConnectOverlay />
           </ReactFlow>
         )}

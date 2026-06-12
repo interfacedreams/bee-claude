@@ -2,8 +2,8 @@ import { contextBridge, ipcRenderer } from 'electron'
 import { electronAPI } from '@electron-toolkit/preload'
 import type {
   CanvasDoc,
+  ChosenFile,
   FolderState,
-  NoteVersion,
   PermissionReply,
   PersistedMessage,
   ThreadEvent,
@@ -31,12 +31,12 @@ const api = {
       ipcRenderer.invoke('note:rename', nodeId, title),
     save: (nodeId: string, content: string): Promise<void> =>
       ipcRenderer.invoke('note:save', nodeId, content),
-    restore: (
-      nodeId: string,
-      index: number
-    ): Promise<{ content: string; versions: NoteVersion[] } | null> =>
-      ipcRenderer.invoke('note:restore', nodeId, index),
     delete: (nodeId: string): Promise<void> => ipcRenderer.invoke('note:delete', nodeId)
+  },
+  file: {
+    choose: (): Promise<ChosenFile | null> => ipcRenderer.invoke('file:choose'),
+    attach: (sourcePath: string): Promise<{ file: string } | null> =>
+      ipcRenderer.invoke('file:attach', sourcePath)
   },
   thread: {
     send: (args: ThreadSendArgs): Promise<void> => ipcRenderer.invoke('thread:send', args),

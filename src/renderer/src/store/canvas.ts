@@ -3,10 +3,11 @@ import { applyNodeChanges, type Node, type NodeChange, type Viewport } from '@xy
 import { DEFAULT_MODEL, MODEL_OPTIONS } from '../../../shared/types'
 import type {
   CanvasDoc,
+  ChosenFile,
+  ContextImage,
   FolderState,
   ForkRef,
   ModelId,
-  NoteVersion,
   PermissionRequest,
   PersistedEdge,
   PersistedMessage,
@@ -56,6 +57,9 @@ export interface ChatData {
   // no forking, no session of their own (they ran inside the lead's session).
   kind?: 'research'
   researchArmed?: boolean // composer toggle: the next send runs in research mode
+  // Image node ids whose bytes this chat's session has already seen — only
+  // newly connected images ride the next send as image blocks.
+  injectedImages?: string[]
   [key: string]: unknown
 }
 
@@ -63,8 +67,6 @@ export interface NoteData {
   title: string
   color?: string
   content: string // live markdown, mirror of the note's title-named file
-  versions: NoteVersion[]
-  viewVersion?: number // runtime: index of the version being viewed; undefined = live
   status: 'idle' | 'streaming'
   draft: string // the AI-instruction composer
   lastReply?: string // the AI's brief commentary from its latest editing turn
@@ -78,12 +80,51 @@ export interface NoteData {
   [key: string]: unknown
 }
 
+export interface FileData {
+  title: string
+  color?: string
+  file?: string // image path relative to the folder root; set once file:attach resolves
+  dataUrl?: string // image bytes; undefined renders a missing-image placeholder
+  minimized: boolean
+  savedHeight?: number
+  [key: string]: unknown
+}
+
 export type ChatNode = Node<ChatData, 'chat'>
 export type NoteNode = Node<NoteData, 'note'>
-export type CanvasNode = ChatNode | NoteNode
+export type FileNode = Node<FileData, 'file'>
+export type CanvasNode = ChatNode | NoteNode | FileNode
 
 export const isChat = (n: CanvasNode): n is ChatNode => n.type === 'chat'
 export const isNote = (n: CanvasNode): n is NoteNode => n.type === 'note'
+export const isFile = (n: CanvasNode): n is FileNode => n.type === 'file'
+
+// An image node's frame is explicit (width AND height) from birth so resizing
+// can keep the aspect ratio. The header band is part of that frame.
+export const FILE_HEADER_H = 49
+const MIN_FILE_W = 240
+
+/** A picked image plus its measured pixel size — placement-ghost state. */
+export interface PendingFile extends ChosenFile {
+  naturalWidth: number
+  naturalHeight: number
+}
+
+/** Initial frame for an image: natural size, capped to the standard node
+ *  width and max height (whichever bites first), aspect preserved. */
+export function fileFrame(pf: { naturalWidth: number; naturalHeight: number }): {
+  width: number
+  height: number
+} {
+  let width = Math.max(MIN_FILE_W, Math.min(NODE_W, pf.naturalWidth))
+  let imgH = (width * pf.naturalHeight) / pf.naturalWidth
+  const maxImg = MAX_NODE_H - FILE_HEADER_H
+  if (imgH > maxImg) {
+    imgH = maxImg
+    width = Math.max(MIN_FILE_W, Math.round((imgH * pf.naturalWidth) / pf.naturalHeight))
+  }
+  return { width, height: Math.round(imgH + FILE_HEADER_H) }
+}
 
 interface Rect {
   x: number
@@ -115,12 +156,27 @@ function makeNoteNode(position: { x: number; y: number }, partial?: Partial<Note
     data: {
       title: '',
       content: '',
-      versions: [],
       status: 'idle',
       draft: '',
       minimized: false,
       ...partial
     }
+  }
+}
+
+function makeFileNode(
+  position: { x: number; y: number },
+  frame: { width: number; height?: number },
+  partial?: Partial<FileData>
+): FileNode {
+  return {
+    id: uid(),
+    type: 'file',
+    position,
+    width: frame.width,
+    ...(frame.height != null ? { height: frame.height } : {}),
+    dragHandle: '.drag-handle',
+    data: { title: '', minimized: false, ...partial }
   }
 }
 
@@ -200,12 +256,16 @@ interface CanvasState {
   // Runtime-only: node awaiting delete confirmation (the modal is open for it).
   pendingDeleteId: string | null
   // Runtime-only: a new-node ghost is stuck to the cursor, waiting for a
-  // placement click on the canvas (armed by the toolbar buttons / C / N).
-  placing: 'chat' | 'note' | null
-  setPlacing: (kind: 'chat' | 'note' | null) => void
-  // Runtime-only: click-to-connect. A tap on a note's circle arms it; the
-  // pending context arrow follows the cursor (ContextConnectOverlay) until a
-  // click on a chat commits the edge — or any other click / Esc cancels.
+  // placement click on the canvas (armed by the toolbar buttons / C / N / F).
+  placing: 'chat' | 'note' | 'file' | null
+  setPlacing: (kind: 'chat' | 'note' | 'file' | null) => void
+  // Runtime-only: the picked image riding the file-placement ghost.
+  pendingFile: PendingFile | null
+  // Open the image picker; on a pick, arm file placement with the image ghost.
+  startFilePlacement: () => Promise<void>
+  // Runtime-only: click-to-connect. A tap on a note's or image's circle arms
+  // it; the pending context arrow follows the cursor (ContextConnectOverlay)
+  // until a click on a chat commits the edge — or any other click / Esc cancels.
   ctxConnectSource: string | null
   setCtxConnectSource: (id: string | null) => void
   requestDelete: (id: string) => void
@@ -218,22 +278,23 @@ interface CanvasState {
   setViewport: (vp: Viewport) => void
   addNodeAt: (position: { x: number; y: number }) => ChatNode
   addNoteAt: (position: { x: number; y: number }) => NoteNode
+  addFileAt: (position: { x: number; y: number }) => FileNode | null
   clearFocusDraft: (id: string) => void
   setDraft: (id: string, draft: string) => void
   setColor: (id: string, color: string) => void
   setTitle: (id: string, title: string) => void
   commitNoteTitle: (id: string) => Promise<void>
   setNoteContent: (id: string, content: string) => void
-  setViewVersion: (id: string, index: number | undefined) => void
-  restoreVersion: (id: string, index: number) => Promise<void>
   send: (id: string) => void
   retry: (id: string) => void
   sendNote: (id: string) => Promise<void>
   toggleResearch: (id: string) => void
   respondPermission: (id: string, requestId: string, allow: boolean) => void
   forkChat: (nodeId: string) => string | null
-  // Context edges: a note feeding a chat's system prompt (note → chat only).
-  addContextEdge: (noteId: string, chatId: string) => void
+  distillChat: (nodeId: string) => Promise<string | null>
+  // Context edges: a note or image feeding a chat's system prompt
+  // (note/image → chat only).
+  addContextEdge: (sourceId: string, chatId: string) => void
   removeContextEdge: (edgeId: string) => void
   discardNode: (id: string) => void
   toggleMinimize: (id: string) => void
@@ -256,6 +317,9 @@ const noteSaveTimers = new Map<string, ReturnType<typeof setTimeout>>()
 // Researchers streaming right now: `${leadNodeId}:${toolUseId}` → child node id.
 // Mid-turn only, so it lives outside the store (no re-renders, never persisted).
 const researchChildren = new Map<string, string>()
+// Image ids riding the in-flight turn as image blocks, per chat node. Marked
+// injected only when the turn lands ok — a failed turn re-sends them on retry.
+const pendingImageInjections = new Map<string, string[]>()
 
 export const useCanvasStore = create<CanvasState>((set, get) => {
   const patchData = (id: string, patch: Record<string, unknown>): void => {
@@ -276,17 +340,22 @@ export const useCanvasStore = create<CanvasState>((set, get) => {
           id: n.id,
           ...(isNote(n)
             ? { kind: 'note' as const }
-            : n.data.kind === 'research'
-              ? { kind: 'research' as const }
-              : {}),
+            : isFile(n)
+              ? { kind: 'file' as const, ...(n.data.file ? { file: n.data.file } : {}) }
+              : n.data.kind === 'research'
+                ? { kind: 'research' as const }
+                : {}),
           position: n.position,
           width: n.width ?? NODE_W,
           ...(height != null ? { height } : {}),
           title: n.data.title,
           ...(n.data.color ? { color: n.data.color } : {}),
           ...(n.data.minimized ? { minimized: true } : {}),
-          ...(n.data.sessionId ? { sessionId: n.data.sessionId } : {}),
-          ...(isChat(n) && n.data.forkOf ? { forkOf: n.data.forkOf } : {})
+          ...(!isFile(n) && n.data.sessionId ? { sessionId: n.data.sessionId } : {}),
+          ...(isChat(n) && n.data.forkOf ? { forkOf: n.data.forkOf } : {}),
+          ...(isChat(n) && n.data.injectedImages?.length
+            ? { injectedImages: n.data.injectedImages }
+            : {})
         }
       }),
       edges,
@@ -345,7 +414,14 @@ export const useCanvasStore = create<CanvasState>((set, get) => {
       set({ folder: next }) // same folder re-picked — just refresh the recents order
       return null
     }
-    set({ folder: next, nodes: [], edges: [], viewport: { x: 0, y: 0, zoom: 1 }, placing: null })
+    set({
+      folder: next,
+      nodes: [],
+      edges: [],
+      viewport: { x: 0, y: 0, zoom: 1 },
+      placing: null,
+      pendingFile: null
+    })
     const vp = await get().load()
     return vp ?? { x: 0, y: 0, zoom: 1 } // fresh folder: reset the view
   }
@@ -362,6 +438,19 @@ export const useCanvasStore = create<CanvasState>((set, get) => {
         const src = get().nodes.find((n) => n.id === e.source)
         return src && isNote(src)
           ? [{ id: src.id, title: src.data.title || 'Untitled note', content: src.data.content }]
+          : []
+      })
+
+  // Images wired to a chat go along as paths; main injects the bytes of any
+  // the session hasn't seen (isNew, stamped by send/retry) into the turn's
+  // user message. An image whose attach hasn't landed yet (no path) sits out.
+  const contextImagesFor = (id: string): ContextImage[] =>
+    get()
+      .edges.filter((e) => e.kind === 'context' && e.target === id)
+      .flatMap((e) => {
+        const src = get().nodes.find((n) => n.id === e.source)
+        return src && isFile(src) && src.data.file
+          ? [{ id: src.id, title: src.data.title || 'Untitled image', file: src.data.file }]
           : []
       })
 
@@ -401,9 +490,29 @@ export const useCanvasStore = create<CanvasState>((set, get) => {
     anchorOffsets: {},
     pendingDeleteId: null,
     placing: null,
+    pendingFile: null,
     ctxConnectSource: null,
 
-    setPlacing: (kind) => set({ placing: kind }),
+    // The pending image lives and dies with file-placement mode.
+    setPlacing: (kind) =>
+      set(kind === 'file' ? { placing: kind } : { placing: kind, pendingFile: null }),
+
+    startFilePlacement: async () => {
+      const picked = await window.api.file.choose()
+      if (!picked) return
+      // Measure the image before placing — the node's frame comes from it.
+      const dims = await new Promise<{ w: number; h: number } | null>((resolveDims) => {
+        const img = new Image()
+        img.onload = () => resolveDims({ w: img.naturalWidth, h: img.naturalHeight })
+        img.onerror = () => resolveDims(null)
+        img.src = picked.dataUrl
+      })
+      if (!dims || dims.w === 0 || dims.h === 0) return
+      set({
+        placing: 'file',
+        pendingFile: { ...picked, naturalWidth: dims.w, naturalHeight: dims.h }
+      })
+    },
 
     setCtxConnectSource: (id) => set({ ctxConnectSource: id }),
 
@@ -427,7 +536,9 @@ export const useCanvasStore = create<CanvasState>((set, get) => {
       for (const nodeId of doomed) {
         const node = byId.get(nodeId)
         if (node && isNote(node)) void window.api.note.delete(nodeId)
-        else void window.api.canvas.deleteThread(nodeId)
+        else if (node && isFile(node)) {
+          // the image file stays in the folder — the node is just a pin
+        } else void window.api.canvas.deleteThread(nodeId)
       }
       persist()
     },
@@ -481,6 +592,28 @@ export const useCanvasStore = create<CanvasState>((set, get) => {
 
     addNoteAt: (position) => spawnNote(position),
 
+    addFileAt: (position) => {
+      const pf = get().pendingFile
+      if (!pf) return null
+      const node = adopt(
+        makeFileNode(position, fileFrame(pf), {
+          title: pf.name.replace(/\.[^.]+$/, ''), // the original file name, sans extension
+          color: nextColor(),
+          dataUrl: pf.dataUrl
+        })
+      )
+      set({ pendingFile: null })
+      // Make the image part of the folder (copy in, or reference in place) —
+      // the relative path is what survives a reload.
+      void window.api.file.attach(pf.sourcePath).then((res) => {
+        if (res) {
+          patchData(node.id, { file: res.file })
+          persist()
+        }
+      })
+      return node
+    },
+
     clearFocusDraft: (id) => patchData(id, { focusDraft: undefined }),
 
     setDraft: (id, draft) => patchData(id, { draft }),
@@ -532,20 +665,9 @@ export const useCanvasStore = create<CanvasState>((set, get) => {
       if (node && isChat(node)) patchData(id, { researchArmed: !node.data.researchArmed })
     },
 
-    setViewVersion: (id, index) => patchData(id, { viewVersion: index }),
-
-    restoreVersion: async (id, index) => {
-      const node = get().nodes.find((n) => n.id === id)
-      if (!node || !isNote(node) || node.data.status === 'streaming') return
-      await flushNoteSave(id)
-      const res = await window.api.note.restore(id, index)
-      if (res)
-        patchData(id, { content: res.content, versions: res.versions, viewVersion: undefined })
-    },
-
     respondPermission: (id, requestId, allow) => {
       const node = get().nodes.find((n) => n.id === id)
-      if (node?.data.pendingPermission?.requestId !== requestId) return
+      if (!node || isFile(node) || node.data.pendingPermission?.requestId !== requestId) return
       // Dismiss immediately; main echoes a permission-resolved event regardless.
       patchData(id, { pendingPermission: undefined })
       window.api.thread.respondPermission({ requestId, allow })
@@ -579,7 +701,10 @@ export const useCanvasStore = create<CanvasState>((set, get) => {
         status: 'idle',
         growthCap: parent.data.growthCap,
         focusDraft: true,
-        forkOf: { sessionId, messageUuid: anchor.uuid }
+        forkOf: { sessionId, messageUuid: anchor.uuid },
+        // the forked session inherits the parent's transcript — and with it,
+        // any images already injected there
+        injectedImages: parent.data.injectedImages
       })
       const edge: PersistedEdge = {
         id: uid(),
@@ -600,15 +725,68 @@ export const useCanvasStore = create<CanvasState>((set, get) => {
       return node.id
     },
 
-    addContextEdge: (noteId, chatId) => {
+    // Distill the chat into a fresh note: fork the chat's session at its tip
+    // (the whole conversation rides along — and the prompt cache with it) and
+    // run a note-editing turn that writes the key insights into the new
+    // note's file. The note is a free-stander: chat's color, no edges.
+    distillChat: async (nodeId) => {
+      const parent = get().nodes.find((n) => n.id === nodeId)
+      if (!parent || !isChat(parent) || parent.data.status === 'streaming') return null
+      const anchor = [...parent.data.messages]
+        .reverse()
+        .find((m) => m.role === 'assistant' && m.uuid)
+      const sessionId = parent.data.sessionId
+      if (!anchor?.uuid || !sessionId) return null
+
+      const wanted = parent.data.title ? `${parent.data.title} — insights` : 'Key insights'
+      // Right of the chat, same level — deliberately dumb placement
+      // (overlapping neighbors is fine). Spawned unselected, and nobody's
+      // selection is touched: sharing a selection with the chat would make
+      // React Flow drag the two around as a unit.
+      const p = boxOf(parent)
+      const node = makeNoteNode(
+        { x: p.x + p.w + GAP, y: p.y },
+        {
+          title: wanted,
+          color: parent.data.color,
+          status: 'streaming',
+          growthCap: viewportFitHeight(get().viewport.zoom)
+        }
+      )
+      set((s) => ({ nodes: [...s.nodes, node] }))
+      persist()
+
+      // The editing turn needs the note's file on disk under its real title
+      // (create allocates "Untitled"; rename moves it, dodging collisions).
+      await window.api.note.create(node.id)
+      const slot = await window.api.note.rename(node.id, wanted)
+      if (slot && slot.title !== wanted) patchData(node.id, { title: slot.title })
+      persist() // canvas.json picks up the filename from main
+
+      void window.api.thread.send({
+        nodeId: node.id,
+        text:
+          'Distill the conversation so far into its key insights. Write a markdown ' +
+          'bulleted list of 5-10 insights into the note — each one concise, specific, ' +
+          'and substantive. No preamble and no headings, just the list.',
+        model: get().model,
+        kind: 'note',
+        noteTitle: slot?.title ?? wanted,
+        forkFrom: { sessionId, messageUuid: anchor.uuid }
+      })
+      return node.id
+    },
+
+    addContextEdge: (sourceId, chatId) => {
       const s = get()
-      const src = s.nodes.find((n) => n.id === noteId)
+      const src = s.nodes.find((n) => n.id === sourceId)
       const tgt = s.nodes.find((n) => n.id === chatId)
-      if (!src || !tgt || !isNote(src) || !isChat(tgt) || tgt.data.kind === 'research') return
-      if (s.edges.some((e) => e.kind === 'context' && e.source === noteId && e.target === chatId))
+      if (!src || !tgt || !(isNote(src) || isFile(src)) || !isChat(tgt)) return
+      if (tgt.data.kind === 'research') return
+      if (s.edges.some((e) => e.kind === 'context' && e.source === sourceId && e.target === chatId))
         return // already connected
       set((st) => ({
-        edges: [...st.edges, { id: uid(), source: noteId, target: chatId, kind: 'context' }]
+        edges: [...st.edges, { id: uid(), source: sourceId, target: chatId, kind: 'context' }]
       }))
       persist()
     },
@@ -625,7 +803,9 @@ export const useCanvasStore = create<CanvasState>((set, get) => {
         edges: s.edges.filter((e) => e.source !== id && e.target !== id)
       }))
       if (node && isNote(node)) void window.api.note.delete(id)
-      else void window.api.canvas.deleteThread(id)
+      else if (node && isFile(node)) {
+        // the image file stays in the folder
+      } else void window.api.canvas.deleteThread(id)
       persist()
     },
 
@@ -688,6 +868,16 @@ export const useCanvasStore = create<CanvasState>((set, get) => {
       persistThread(id) // the user message is part of the durable transcript now
 
       const contextNotes = contextNotesFor(id)
+      // Only images the session hasn't seen carry bytes this turn; remember
+      // them so a successful turn marks them injected.
+      const injected = new Set(node.data.injectedImages ?? [])
+      const contextImages = contextImagesFor(id).map((img) => ({
+        ...img,
+        isNew: !injected.has(img.id)
+      }))
+      const newImageIds = contextImages.filter((i) => i.isNew).map((i) => i.id)
+      if (newImageIds.length > 0) pendingImageInjections.set(id, newImageIds)
+      else pendingImageInjections.delete(id)
 
       void window.api.thread.send({
         nodeId: id,
@@ -697,7 +887,8 @@ export const useCanvasStore = create<CanvasState>((set, get) => {
         // first send of a forked node: fork the parent session at the anchor
         ...(!node.data.sessionId && node.data.forkOf ? { forkFrom: node.data.forkOf } : {}),
         ...(node.data.researchArmed ? { research: true } : {}),
-        ...(contextNotes.length > 0 ? { contextNotes } : {})
+        ...(contextNotes.length > 0 ? { contextNotes } : {}),
+        ...(contextImages.length > 0 ? { contextImages } : {})
       })
     },
 
@@ -738,6 +929,14 @@ export const useCanvasStore = create<CanvasState>((set, get) => {
       }))
 
       const contextNotes = contextNotesFor(id)
+      const injected = new Set(node.data.injectedImages ?? [])
+      const contextImages = contextImagesFor(id).map((img) => ({
+        ...img,
+        isNew: !injected.has(img.id)
+      }))
+      const newImageIds = contextImages.filter((i) => i.isNew).map((i) => i.id)
+      if (newImageIds.length > 0) pendingImageInjections.set(id, newImageIds)
+      else pendingImageInjections.delete(id)
       void window.api.thread.send({
         nodeId: id,
         text: lastUser.text,
@@ -745,7 +944,8 @@ export const useCanvasStore = create<CanvasState>((set, get) => {
         model: get().model,
         // the failed turn may have been a fork's first send — fork again
         ...(!node.data.sessionId && node.data.forkOf ? { forkFrom: node.data.forkOf } : {}),
-        ...(contextNotes.length > 0 ? { contextNotes } : {})
+        ...(contextNotes.length > 0 ? { contextNotes } : {}),
+        ...(contextImages.length > 0 ? { contextImages } : {})
       })
     },
 
@@ -768,7 +968,6 @@ export const useCanvasStore = create<CanvasState>((set, get) => {
                   draft: '',
                   status: 'streaming' as const,
                   lastReply: '',
-                  viewVersion: undefined, // an editing turn always lands on the live content
                   growthCap
                 }
               } as CanvasNode)
@@ -806,13 +1005,33 @@ export const useCanvasStore = create<CanvasState>((set, get) => {
             ...(p.height != null && !p.minimized ? { height: Math.min(p.height, cap) } : {})
           }
           const savedHeight = p.minimized && p.height != null ? Math.min(p.height, cap) : undefined
+          if (p.kind === 'file') {
+            // Image frames are explicit and aspect-true — no screen-fit clamp.
+            return {
+              ...makeFileNode(
+                p.position,
+                {
+                  width: p.width,
+                  ...(p.height != null && !p.minimized ? { height: p.height } : {})
+                },
+                {
+                  title: p.title,
+                  color: p.color,
+                  file: p.file,
+                  dataUrl: p.dataUrl,
+                  minimized: p.minimized ?? false,
+                  ...(p.minimized && p.height != null ? { savedHeight: p.height } : {})
+                }
+              ),
+              id: p.id
+            }
+          }
           if (p.kind === 'note') {
             return {
               ...makeNoteNode(p.position, {
                 title: p.title,
                 color: p.color,
                 content: p.content ?? '',
-                versions: p.noteVersions ?? [],
                 status: 'idle',
                 minimized: p.minimized ?? false,
                 savedHeight,
@@ -833,6 +1052,7 @@ export const useCanvasStore = create<CanvasState>((set, get) => {
               growthCap: cap,
               sessionId: p.sessionId,
               forkOf: p.forkOf,
+              injectedImages: p.injectedImages,
               ...(p.kind === 'research' ? { kind: 'research' as const } : {})
             }),
             ...frame
@@ -864,6 +1084,7 @@ window.api.thread.onEvent((event) => {
     patch(event.nodeId, (node) => {
       // Note turns route the assistant's commentary into the reply strip.
       if (isNote(node)) return { lastReply: (node.data.lastReply ?? '') + event.text }
+      if (!isChat(node)) return {}
       const last = node.data.messages[node.data.messages.length - 1]
       if (!last || last.role !== 'assistant') return {}
       return {
@@ -934,7 +1155,7 @@ window.api.thread.onEvent((event) => {
     patch(event.nodeId, () => ({ pendingPermission: event.request }))
   } else if (event.type === 'permission-resolved') {
     patch(event.nodeId, (node) =>
-      node.data.pendingPermission?.requestId === event.requestId
+      !isFile(node) && node.data.pendingPermission?.requestId === event.requestId
         ? { pendingPermission: undefined }
         : {}
     )
@@ -948,6 +1169,10 @@ window.api.thread.onEvent((event) => {
         useCanvasStore.getState().persistThread(childId)
       }
     }
+    // Images that rode this turn are in the session now (only if it landed —
+    // a failed turn's images go again on retry).
+    const injectedNow = event.ok ? pendingImageInjections.get(event.nodeId) : undefined
+    pendingImageInjections.delete(event.nodeId)
     patch(event.nodeId, (node) => {
       if (isNote(node)) {
         const warning = event.ok === false ? `\n\n⚠️ ${event.error ?? 'The agent run failed.'}` : ''
@@ -955,11 +1180,12 @@ window.api.thread.onEvent((event) => {
           status: 'idle',
           pendingPermission: undefined,
           ...(event.usage ? { lastUsage: event.usage } : {}),
-          // adopt the turn's settled content + version history
-          ...(event.note ? { content: event.note.content, versions: event.note.versions } : {}),
+          // adopt the turn's settled content
+          ...(event.note ? { content: event.note.content } : {}),
           ...(warning ? { lastReply: (node.data.lastReply ?? '') + warning } : {})
         }
       }
+      if (!isChat(node)) return {}
       const last = node.data.messages[node.data.messages.length - 1]
       if (event.ok === false) {
         return {
@@ -979,6 +1205,11 @@ window.api.thread.onEvent((event) => {
         lastError: undefined,
         pendingPermission: undefined, // safety net if the turn dies mid-prompt
         ...(event.usage ? { lastUsage: event.usage } : {}),
+        ...(injectedNow?.length
+          ? {
+              injectedImages: [...new Set([...(node.data.injectedImages ?? []), ...injectedNow])]
+            }
+          : {}),
         messages:
           last && last.role === 'assistant'
             ? [
@@ -990,6 +1221,8 @@ window.api.thread.onEvent((event) => {
       }
     })
     useCanvasStore.getState().persistThread(event.nodeId)
+    // injectedImages round-trips through canvas.json — make the mark durable.
+    if (injectedNow?.length) useCanvasStore.getState().persistSoon()
 
     // First successful exchange still wearing its send-time stub (the opening
     // message's first 60 chars): swap in a real title from a one-shot Haiku
