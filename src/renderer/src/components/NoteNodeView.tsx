@@ -6,12 +6,13 @@ import {
   ResizeControlVariant,
   type NodeProps
 } from '@xyflow/react'
-import { Expand, Minus, Pencil, Shrink, Trash2 } from 'lucide-react'
+import { Minus, Pencil, Trash2 } from 'lucide-react'
 import { useCanvasStore, MAX_NODE_H, type NoteNode } from '../store/canvas'
 import { paletteFor } from '../lib/palette'
-import { useForwardedWheel } from '../lib/useForwardedWheel'
-import { usePageExpand } from '../lib/usePageExpand'
-import PageBackdrop from './PageBackdrop'
+import { usePanel } from '../lib/usePanel'
+import NoteBody from './NoteBody'
+import DockedStub from './DockedStub'
+import PanelChips from './PanelChips'
 import {
   CHIP_BUTTON,
   CTX_HANDLE_ID,
@@ -19,7 +20,7 @@ import {
   DRAG_HEADER,
   HIDDEN_HANDLE
 } from '../lib/nodeChrome'
-import NoteEditor, { type NoteEditorHandle } from './NoteEditor'
+import { type NoteEditorHandle } from './NoteEditor'
 
 // Notes read as paper, not post-it: a warm-white ruled body under a colored
 // header band (chats are solid colored cards).
@@ -28,7 +29,6 @@ const PAPER = '#FFFDF6'
 function NoteNodeView({ id, data, selected }: NodeProps<NoteNode>): React.JSX.Element {
   const setTitle = useCanvasStore((s) => s.setTitle)
   const commitNoteTitle = useCanvasStore((s) => s.commitNoteTitle)
-  const setNoteContent = useCanvasStore((s) => s.setNoteContent)
   const requestDelete = useCanvasStore((s) => s.requestDelete)
   const discardNode = useCanvasStore((s) => s.discardNode)
   const toggleMinimize = useCanvasStore((s) => s.toggleMinimize)
@@ -36,21 +36,16 @@ function NoteNodeView({ id, data, selected }: NodeProps<NoteNode>): React.JSX.El
   const setCtxConnectSource = useCanvasStore((s) => s.setCtxConnectSource)
   const armed = useCanvasStore((s) => s.ctxConnectSource === id)
   const explicitHeight = useCanvasStore((s) => s.nodes.find((n) => n.id === id)?.height)
-  const { isPage, togglePage } = usePageExpand(id)
+  const { docked, mode, open, collapse } = usePanel(id)
 
   const titleRef = useRef<HTMLInputElement>(null)
   const editorRef = useRef<NoteEditorHandle>(null)
-  const scrollRef = useRef<HTMLDivElement>(null)
 
   const streaming = data.status === 'streaming'
   const palette = paletteFor(data.color)
 
   // A note is discardable while it has no substance yet.
   const blank = !data.content && !data.title && !data.sessionId
-
-  // Scrolling the note body requires focus (the node is selected by clicking
-  // it); otherwise the wheel pans the canvas. Full-page it always scrolls.
-  useForwardedWheel(scrollRef, !data.minimized, !!selected || isPage)
 
   // The title is static text (part of the header drag surface) until the user
   // enters rename mode via the pencil button or a double-click on the title.
@@ -90,8 +85,7 @@ function NoteNodeView({ id, data, selected }: NodeProps<NoteNode>): React.JSX.El
       style={
         {
           maxHeight: explicitHeight ?? data.growthCap ?? MAX_NODE_H,
-          // paper fill at 85%, matching chat nodes — solid as a page
-          backgroundColor: isPage ? PAPER : `${PAPER}D9`,
+          backgroundColor: `${PAPER}D9`, // paper fill at 85%, matching chat nodes
           '--np-bg': palette.bg,
           '--np-edge': palette.edge,
           '--np-chip': `${palette.edge}99`,
@@ -100,11 +94,10 @@ function NoteNodeView({ id, data, selected }: NodeProps<NoteNode>): React.JSX.El
           '--np-ring': `${palette.accent}B3`
         } as React.CSSProperties
       }
-      className={`flex h-full w-full flex-col border border-(--np-edge) shadow-md ${
-        isPage ? '' : 'rounded-[14px]'
-      } ${selected ? 'ring-2 ring-(--np-ring)' : ''}`}
+      className={`flex h-full w-full flex-col rounded-[14px] border border-(--np-edge) shadow-md ${
+        selected ? 'ring-2 ring-(--np-ring)' : ''
+      }`}
     >
-      {isPage && <PageBackdrop onExit={togglePage} />}
       {/* hidden layout anchors (left/right) kept for any id-less edges */}
       <Handle type="target" position={Position.Left} isConnectable={false} style={HIDDEN_HANDLE} />
       <Handle type="source" position={Position.Right} isConnectable={false} style={HIDDEN_HANDLE} />
@@ -129,7 +122,7 @@ function NoteNodeView({ id, data, selected }: NodeProps<NoteNode>): React.JSX.El
         style={ctxHandleStyle(palette.accent, 'bottom', 'square')}
       />
 
-      {!data.minimized && !isPage && (
+      {!data.minimized && (
         <>
           <NodeResizeControl
             position="right"
@@ -165,16 +158,12 @@ function NoteNodeView({ id, data, selected }: NodeProps<NoteNode>): React.JSX.El
 
       {/* colored header band — the note's "tab of sticky tape" */}
       <div
-        style={{ backgroundColor: isPage ? palette.bg : `${palette.bg}D9` }}
-        className={`${isPage ? '' : DRAG_HEADER} flex shrink-0 items-center gap-2 px-3 py-1.5 ${
-          isPage
-            ? 'border-b border-(--np-edge)'
-            : data.minimized
-              ? 'rounded-[13px]'
-              : 'rounded-t-[13px] border-b border-(--np-edge)'
+        style={{ backgroundColor: `${palette.bg}D9` }}
+        className={`${DRAG_HEADER} flex shrink-0 items-center gap-2 px-3 py-1.5 ${
+          data.minimized ? 'rounded-[13px]' : 'rounded-t-[13px] border-b border-(--np-edge)'
         }`}
       >
-        {!data.minimized && !isPage && (
+        {!data.minimized && (
           <button
             type="button"
             onClick={() => toggleMinimize(id)}
@@ -184,18 +173,7 @@ function NoteNodeView({ id, data, selected }: NodeProps<NoteNode>): React.JSX.El
             <Minus className="h-[25px] w-[25px]" />
           </button>
         )}
-        <button
-          type="button"
-          onClick={togglePage}
-          title={isPage ? 'Exit full page (Esc)' : 'Open full page'}
-          className={CHIP_BUTTON}
-        >
-          {isPage ? (
-            <Shrink className="h-[25px] w-[25px]" />
-          ) : (
-            <Expand className="h-[25px] w-[25px]" />
-          )}
-        </button>
+        <PanelChips mode={mode} open={open} />
         {editingTitle && !data.minimized ? (
           <input
             ref={titleRef}
@@ -258,35 +236,12 @@ function NoteNodeView({ id, data, selected }: NodeProps<NoteNode>): React.JSX.El
         </div>
       </div>
 
-      {!data.minimized && (
-        <div className="nodrag mx-1 my-1 flex min-h-0 flex-1 cursor-auto flex-col overflow-hidden">
-          <div
-            ref={scrollRef}
-            style={{
-              // ruled notepad lines, aligned to the 26px text grid and tinted
-              // to the palette; `local` makes them scroll with the content
-              backgroundImage: `repeating-linear-gradient(to bottom, transparent 0, transparent 25px, ${palette.edge}59 25px, ${palette.edge}59 26px)`,
-              backgroundAttachment: 'local',
-              backgroundPosition: '0 8px'
-            }}
-            className="nowheel select-text transcript-scroll min-h-0 flex-1 overflow-x-hidden overflow-y-auto pb-1 text-[15px] leading-[26px] text-neutral-900"
-          >
-            <NoteEditor
-              ref={editorRef}
-              content={data.content}
-              readOnly={streaming}
-              onChange={(md) => setNoteContent(id, md)}
-              onEscape={() => {
-                if (blank) discardNode(id)
-              }}
-            />
-            {/* same typing indicator as chat replies, while the AI writes */}
-            {streaming && (
-              <div className="animate-pulse px-3 py-1 tracking-widest text-neutral-400">●●●</div>
-            )}
-          </div>
-        </div>
-      )}
+      {!data.minimized &&
+        (docked ? (
+          <DockedStub onClick={collapse} />
+        ) : (
+          <NoteBody id={id} focused={!!selected} editorRef={editorRef} />
+        ))}
     </div>
   )
 }

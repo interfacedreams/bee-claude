@@ -8,29 +8,13 @@ import {
   useStoreApi,
   type NodeProps
 } from '@xyflow/react'
-import TextareaAutosize from 'react-textarea-autosize'
-import Markdown from 'react-markdown'
-import remarkGfm from 'remark-gfm'
-import remarkMath from 'remark-math'
-import rehypeKatex from 'rehype-katex'
-import 'katex/dist/katex.min.css'
-import {
-  Expand,
-  GitFork,
-  Sparkles,
-  Minus,
-  Pencil,
-  RotateCcw,
-  Shrink,
-  Telescope,
-  Trash2,
-  TriangleAlert
-} from 'lucide-react'
-import { useCanvasStore, MAX_NODE_H, type ChatNode, type Message } from '../store/canvas'
+import { GitFork, Minus, Pencil, Trash2, TriangleAlert } from 'lucide-react'
+import { useCanvasStore, MAX_NODE_H, type ChatNode } from '../store/canvas'
 import { paletteFor } from '../lib/palette'
-import { useForwardedWheel } from '../lib/useForwardedWheel'
-import { usePageExpand } from '../lib/usePageExpand'
-import PageBackdrop from './PageBackdrop'
+import { usePanel } from '../lib/usePanel'
+import ChatBody, { type ChatBodyHandle } from './ChatBody'
+import DockedStub from './DockedStub'
+import PanelChips from './PanelChips'
 import {
   CHIP_BUTTON,
   CTX_HANDLE_ID,
@@ -38,70 +22,22 @@ import {
   DRAG_HEADER,
   HIDDEN_HANDLE
 } from '../lib/nodeChrome'
-import BeeIcon from './BeeIcon'
-import PermissionPrompt from './PermissionPrompt'
-
-function MessageView({
-  message,
-  pending
-}: {
-  message: Message
-  pending?: boolean
-}): React.JSX.Element {
-  if (message.role === 'user') {
-    return (
-      <div
-        data-msg={message.id}
-        className="mr-1 mb-2 ml-auto w-fit max-w-full rounded-[10px] bg-white/85 px-3 py-2 break-words whitespace-pre-wrap"
-      >
-        {message.text}
-      </div>
-    )
-  }
-  if (pending && !message.text) {
-    return (
-      <div
-        data-msg={message.id}
-        className="mb-2 animate-pulse px-3 py-1 tracking-widest text-neutral-400"
-      >
-        ●●●
-      </div>
-    )
-  }
-  return (
-    <div data-msg={message.id} className="prose-chat mb-2 px-3 py-1">
-      <Markdown remarkPlugins={[remarkGfm, remarkMath]} rehypePlugins={[rehypeKatex]}>
-        {message.text}
-      </Markdown>
-      {pending && <div className="animate-pulse tracking-widest text-neutral-400">●●●</div>}
-    </div>
-  )
-}
 
 function ChatNodeView({ id, data, selected }: NodeProps<ChatNode>): React.JSX.Element {
-  const setDraft = useCanvasStore((s) => s.setDraft)
   const setTitle = useCanvasStore((s) => s.setTitle)
-  const send = useCanvasStore((s) => s.send)
-  const retry = useCanvasStore((s) => s.retry)
-  const respondPermission = useCanvasStore((s) => s.respondPermission)
   const forkChat = useCanvasStore((s) => s.forkChat)
-  const distillChat = useCanvasStore((s) => s.distillChat)
-  const toggleResearch = useCanvasStore((s) => s.toggleResearch)
   const requestDelete = useCanvasStore((s) => s.requestDelete)
-  const discardNode = useCanvasStore((s) => s.discardNode)
   const toggleMinimize = useCanvasStore((s) => s.toggleMinimize)
-  const clearFocusDraft = useCanvasStore((s) => s.clearFocusDraft)
   // Explicit height only (user resize / restored from disk) — React Flow's own
   // `height` prop reports the *measured* height, which would pin the node at
   // whatever size it currently is and stop it from growing with new content.
   const explicitHeight = useCanvasStore((s) => s.nodes.find((n) => n.id === id)?.height)
   const { fitView } = useReactFlow()
-  const { isPage, togglePage } = usePageExpand(id)
+  const { docked, mode, open, collapse } = usePanel(id)
 
-  const textareaRef = useRef<HTMLTextAreaElement>(null)
   const titleRef = useRef<HTMLInputElement>(null)
-  const scrollRef = useRef<HTMLDivElement>(null)
   const rootRef = useRef<HTMLDivElement>(null)
+  const bodyRef = useRef<ChatBodyHandle>(null)
 
   // The title is static text (part of the header drag surface) until the user
   // enters rename mode via the pencil button or a double-click on the title.
@@ -114,11 +50,8 @@ function ChatNodeView({ id, data, selected }: NodeProps<ChatNode>): React.JSX.El
     titleRef.current?.focus()
     titleRef.current?.select()
   }, [editingTitle])
-  // Follow new content only while the user is at (or near) the bottom,
-  // so scrolling up to read history never gets yanked back down.
-  const stickToBottom = useRef(true)
+
   const streaming = data.status === 'streaming'
-  const empty = data.messages.length === 0
   // Researcher transcripts spawned by a research turn — display-only: they ran
   // inside the lead's session, so there's nothing to reply to (and no composer).
   const isResearch = data.kind === 'research'
@@ -158,90 +91,18 @@ function ChatNodeView({ id, data, selected }: NodeProps<ChatNode>): React.JSX.El
     setAnchorOffsets(id, offsets)
   }, [anchorKey, flowStore, id, setAnchorOffsets])
   // Re-measure after every commit: messages stream in, nodes resize, forks come
-  // and go — setAnchorOffsets no-ops when nothing moved.
+  // and go — setAnchorOffsets no-ops when nothing moved. (While the chat is
+  // docked, its messages aren't on the canvas — anchors degrade to the node
+  // edge, which is where the stub sits anyway.)
   useEffect(measureAnchors)
-
-  // Refocus the composer the moment the assistant finishes in this node —
-  // unless the user has moved on to typing somewhere else (don't steal focus).
-  const wasStreaming = useRef(streaming)
-  useEffect(() => {
-    if (wasStreaming.current && !streaming) {
-      const active = document.activeElement
-      const typingElsewhere =
-        active instanceof HTMLElement &&
-        active !== textareaRef.current &&
-        (active.tagName === 'TEXTAREA' || active.tagName === 'INPUT' || active.isContentEditable)
-      if (!typingElsewhere) textareaRef.current?.focus()
-    }
-    wasStreaming.current = streaming
-  }, [streaming])
-
-  // Spawned via ⌘N / double-click / fork: pull the keyboard into this composer,
-  // even if another chat's composer currently has focus. A fresh node mounts
-  // `visibility: hidden` until React Flow measures it, and focus() on a hidden
-  // element is silently ignored — so retry every frame until focus sticks, and
-  // only then consume the focusDraft flag.
-  useEffect(() => {
-    if (!data.focusDraft) return
-    let raf = 0
-    const tryFocus = (): void => {
-      const el = textareaRef.current
-      if (!el) return
-      el.focus()
-      if (document.activeElement === el) clearFocusDraft(id)
-      else raf = requestAnimationFrame(tryFocus)
-    }
-    tryFocus()
-    return () => cancelAnimationFrame(raf)
-  }, [data.focusDraft, clearFocusDraft, id])
-
-  // Arrive at the latest messages: jump to the bottom on mount.
-  useEffect(() => {
-    const el = scrollRef.current
-    if (el) el.scrollTop = el.scrollHeight
-  }, [])
-
-  // Scrolling the transcript requires focus (the node is selected by clicking
-  // it); otherwise the wheel pans the canvas. Any upward wheel during
-  // streaming releases the auto-follow immediately.
-  useForwardedWheel(scrollRef, !empty && !data.minimized, !!selected || isPage, () => {
-    stickToBottom.current = false
-  })
-
-  const handleScroll = (): void => {
-    const el = scrollRef.current
-    if (!el) return
-    const distanceFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight
-    if (distanceFromBottom < 8) stickToBottom.current = true
-    else if (distanceFromBottom > 48) stickToBottom.current = false
-    measureAnchors() // anchor messages move with the transcript
-  }
-  useEffect(() => {
-    const el = scrollRef.current
-    if (el && stickToBottom.current) el.scrollTop = el.scrollHeight
-  }, [data.messages])
-
-  const canSend = !streaming && data.draft.trim().length > 0
 
   const forkAndCenter = (): void => {
     const forkId = forkChat(id)
     if (!forkId) return
-    // forking out of a full page lands you back on the canvas, beside the fork
-    if (isPage) useCanvasStore.getState().collapseExpanded()
     // let React Flow mount and measure the new node before fitting to it
     setTimeout(() => {
       void fitView({ nodes: [{ id: forkId }], duration: 300, padding: 0.1, maxZoom: 1 })
     }, 50)
-  }
-
-  const distillAndCenter = (): void => {
-    void distillChat(id).then((noteId) => {
-      if (!noteId) return
-      if (isPage) useCanvasStore.getState().collapseExpanded()
-      setTimeout(() => {
-        void fitView({ nodes: [{ id: noteId }], duration: 300, padding: 0.1, maxZoom: 1 })
-      }, 50)
-    })
   }
 
   return (
@@ -251,8 +112,7 @@ function ChatNodeView({ id, data, selected }: NodeProps<ChatNode>): React.JSX.El
         {
           // the growth cap only limits auto-sizing; an explicit (user-resized) height wins
           maxHeight: explicitHeight ?? data.growthCap ?? MAX_NODE_H,
-          // body fill at 85% — solid as a page, so the canvas can't ghost through
-          backgroundColor: isPage ? palette.bg : `${palette.bg}D9`,
+          backgroundColor: `${palette.bg}D9`, // body fill at 85%
           '--np-bg': palette.bg,
           '--np-edge': palette.edge,
           '--np-chip': `${palette.edge}99`, // chip buttons at 60%
@@ -261,11 +121,10 @@ function ChatNodeView({ id, data, selected }: NodeProps<ChatNode>): React.JSX.El
           '--np-ring': `${palette.accent}B3` // selection ring at 70%
         } as React.CSSProperties
       }
-      className={`flex h-full w-full flex-col border border-black/5 shadow-md ${
-        isPage ? '' : 'rounded-[14px]'
-      } ${selected ? 'ring-2 ring-(--np-ring)' : ''}`}
+      className={`flex h-full w-full flex-col rounded-[14px] border border-black/5 shadow-md ${
+        selected ? 'ring-2 ring-(--np-ring)' : ''
+      }`}
     >
-      {isPage && <PageBackdrop onExit={togglePage} />}
       {/* invisible anchors so fork edges have somewhere to attach */}
       <Handle type="target" position={Position.Left} isConnectable={false} style={HIDDEN_HANDLE} />
       <Handle type="source" position={Position.Right} isConnectable={false} style={HIDDEN_HANDLE} />
@@ -286,7 +145,7 @@ function ChatNodeView({ id, data, selected }: NodeProps<ChatNode>): React.JSX.El
         />
       )}
 
-      {!data.minimized && !isPage && (
+      {!data.minimized && (
         <>
           <NodeResizeControl
             position="right"
@@ -321,11 +180,11 @@ function ChatNodeView({ id, data, selected }: NodeProps<ChatNode>): React.JSX.El
       )}
 
       <div
-        className={`${isPage ? '' : DRAG_HEADER} flex shrink-0 items-center gap-2 px-3 py-1.5 ${
-          data.minimized && !isPage ? '' : 'border-b border-(--np-edge)'
+        className={`${DRAG_HEADER} flex shrink-0 items-center gap-2 px-3 py-1.5 ${
+          data.minimized ? '' : 'border-b border-(--np-edge)'
         }`}
       >
-        {!data.minimized && !isPage && (
+        {!data.minimized && (
           <button
             type="button"
             onClick={() => toggleMinimize(id)}
@@ -335,18 +194,7 @@ function ChatNodeView({ id, data, selected }: NodeProps<ChatNode>): React.JSX.El
             <Minus className="h-[25px] w-[25px]" />
           </button>
         )}
-        <button
-          type="button"
-          onClick={togglePage}
-          title={isPage ? 'Exit full page (Esc)' : 'Open full page'}
-          className={CHIP_BUTTON}
-        >
-          {isPage ? (
-            <Shrink className="h-[25px] w-[25px]" />
-          ) : (
-            <Expand className="h-[25px] w-[25px]" />
-          )}
-        </button>
+        <PanelChips mode={mode} open={open} />
         {editingTitle && !data.minimized ? (
           <input
             ref={titleRef}
@@ -358,7 +206,7 @@ function ChatNodeView({ id, data, selected }: NodeProps<ChatNode>): React.JSX.El
               if (e.key === 'Enter') {
                 e.preventDefault()
                 setEditingTitle(false)
-                textareaRef.current?.focus()
+                bodyRef.current?.focusComposer()
               } else if (e.key === 'Escape') {
                 setEditingTitle(false)
               }
@@ -399,16 +247,6 @@ function ChatNodeView({ id, data, selected }: NodeProps<ChatNode>): React.JSX.El
           {canFork && (
             <button
               type="button"
-              onClick={distillAndCenter}
-              title="Distill the key insights into a new note"
-              className={CHIP_BUTTON}
-            >
-              <Sparkles className="h-[25px] w-[25px]" />
-            </button>
-          )}
-          {canFork && (
-            <button
-              type="button"
               onClick={forkAndCenter}
               title="Fork this chat from its latest message"
               className={CHIP_BUTTON}
@@ -427,104 +265,12 @@ function ChatNodeView({ id, data, selected }: NodeProps<ChatNode>): React.JSX.El
         </div>
       </div>
 
-      {/* empty transcript area sized so a fresh chat matches a fresh note
-          (header + 172px reserved note body) */}
-      {!data.minimized && empty && <div className="min-h-[98px] flex-1" />}
-
-      {!data.minimized && !empty && (
-        <div className="nodrag mx-1 mt-3 flex min-h-0 flex-1 cursor-auto flex-col overflow-hidden">
-          <div
-            ref={scrollRef}
-            onScroll={handleScroll}
-            className="nowheel select-text transcript-scroll min-h-0 flex-1 overflow-x-hidden overflow-y-auto pb-1 text-[16px] leading-relaxed text-neutral-900"
-          >
-            {data.messages.map((m, i) => (
-              <MessageView
-                key={m.id}
-                message={m}
-                pending={streaming && i === data.messages.length - 1}
-              />
-            ))}
-          </div>
-        </div>
-      )}
-
-      {!data.minimized && data.status === 'error' && (
-        <div className="nodrag mx-1 mt-2 flex shrink-0 cursor-auto items-start gap-2 rounded-[10px] bg-red-50/90 px-3 py-2 text-[14px] leading-snug text-red-800">
-          <TriangleAlert className="mt-0.5 h-4 w-4 shrink-0" />
-          <span className="min-w-0 flex-1 break-words select-text">
-            {data.lastError ?? 'The turn failed.'}
-          </span>
-          <button
-            type="button"
-            onClick={() => retry(id)}
-            title="Retry the failed message"
-            className="flex shrink-0 items-center gap-1 rounded-md bg-red-700 px-2.5 py-1 font-medium text-white transition-colors hover:bg-red-800"
-          >
-            <RotateCcw className="h-3.5 w-3.5" />
-            Retry
-          </button>
-        </div>
-      )}
-
-      {!data.minimized && data.pendingPermission && (
-        <PermissionPrompt
-          request={data.pendingPermission}
-          onRespond={(allow) => respondPermission(id, data.pendingPermission!.requestId, allow)}
-        />
-      )}
-
-      {!data.minimized && !isResearch && (
-        <div
-          className={`nodrag mx-1 mt-2 shrink-0 cursor-auto rounded-[10px] bg-white/85 text-[16px] ${
-            // In page mode the node runs to the window's bottom edge — give
-            // the composer real clearance from the screen edge.
-            isPage ? 'mb-2' : 'mb-1'
-          }`}
-        >
-          <TextareaAutosize
-            ref={textareaRef}
-            autoFocus={data.status === 'empty' || data.focusDraft === true}
-            value={data.draft}
-            minRows={1}
-            placeholder={empty ? 'Ask anything…' : 'Reply…'}
-            onChange={(e) => setDraft(id, e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === 'Enter' && !e.shiftKey) {
-                e.preventDefault()
-                if (canSend) send(id)
-              } else if (e.key === 'Escape') {
-                if (empty && !data.draft) discardNode(id)
-                else e.currentTarget.blur()
-              }
-            }}
-            className="block w-full resize-none bg-transparent px-3 py-2 outline-none placeholder:text-neutral-400"
-          />
-          <div className="flex items-center justify-between px-2 pb-1.5">
-            <button
-              type="button"
-              onClick={() => toggleResearch(id)}
-              title="Research mode: spawn parallel web researchers for this message"
-              className={`rounded-md p-1 transition-colors ${
-                data.researchArmed
-                  ? 'bg-(--np-accent) text-white'
-                  : 'text-neutral-400 hover:text-neutral-600'
-              }`}
-            >
-              <Telescope className="h-5 w-5" />
-            </button>
-            <button
-              type="button"
-              onClick={() => send(id)}
-              disabled={!canSend}
-              title={streaming ? 'Waiting for the assistant to finish' : 'Send (Enter)'}
-              className="transition-all hover:scale-110 active:scale-95 disabled:opacity-30"
-            >
-              <BeeIcon className="h-7 w-7" />
-            </button>
-          </div>
-        </div>
-      )}
+      {!data.minimized &&
+        (docked ? (
+          <DockedStub onClick={collapse} />
+        ) : (
+          <ChatBody ref={bodyRef} id={id} focused={!!selected} onScrolled={measureAnchors} />
+        ))}
     </div>
   )
 }

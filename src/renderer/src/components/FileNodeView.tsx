@@ -6,12 +6,13 @@ import {
   ResizeControlVariant,
   type NodeProps
 } from '@xyflow/react'
-import { Expand, FileText, ImageOff, Minus, Pencil, Shrink, Trash2 } from 'lucide-react'
+import { Minus, Pencil, Trash2 } from 'lucide-react'
 import { useCanvasStore, MAX_NODE_H, type FileNode } from '../store/canvas'
 import { paletteFor } from '../lib/palette'
-import PdfViewer from './PdfViewer'
-import { usePageExpand } from '../lib/usePageExpand'
-import PageBackdrop from './PageBackdrop'
+import { usePanel } from '../lib/usePanel'
+import FileBody from './FileBody'
+import DockedStub from './DockedStub'
+import PanelChips from './PanelChips'
 import {
   CHIP_BUTTON,
   CTX_HANDLE_ID,
@@ -35,7 +36,7 @@ function FileNodeView({ id, data, selected }: NodeProps<FileNode>): React.JSX.El
   const toggleMinimize = useCanvasStore((s) => s.toggleMinimize)
   const setCtxConnectSource = useCanvasStore((s) => s.setCtxConnectSource)
   const armed = useCanvasStore((s) => s.ctxConnectSource === id)
-  const { isPage, togglePage } = usePageExpand(id)
+  const { docked, mode, open, collapse } = usePanel(id)
 
   const titleRef = useRef<HTMLInputElement>(null)
   const isPdf = data.kind === 'pdf'
@@ -59,7 +60,7 @@ function FileNodeView({ id, data, selected }: NodeProps<FileNode>): React.JSX.El
     <div
       style={
         {
-          backgroundColor: isPage ? PAPER : `${PAPER}D9`, // solid as a page
+          backgroundColor: `${PAPER}D9`,
           '--np-bg': palette.bg,
           '--np-edge': palette.edge,
           '--np-chip': `${palette.edge}99`,
@@ -68,11 +69,10 @@ function FileNodeView({ id, data, selected }: NodeProps<FileNode>): React.JSX.El
           '--np-ring': `${palette.accent}B3`
         } as React.CSSProperties
       }
-      className={`flex h-full w-full flex-col border border-(--np-edge) shadow-md ${
-        isPage ? '' : 'rounded-[14px]'
-      } ${selected ? 'ring-2 ring-(--np-ring)' : ''}`}
+      className={`flex h-full w-full flex-col rounded-[14px] border border-(--np-edge) shadow-md ${
+        selected ? 'ring-2 ring-(--np-ring)' : ''
+      }`}
     >
-      {isPage && <PageBackdrop onExit={togglePage} />}
       {/* hidden layout anchors (left/right) for any future edges */}
       <Handle type="target" position={Position.Left} isConnectable={false} style={HIDDEN_HANDLE} />
       <Handle type="source" position={Position.Right} isConnectable={false} style={HIDDEN_HANDLE} />
@@ -96,7 +96,7 @@ function FileNodeView({ id, data, selected }: NodeProps<FileNode>): React.JSX.El
         style={ctxHandleStyle(palette.accent, 'bottom')}
       />
 
-      {!data.minimized && !isPage && (
+      {!data.minimized && (
         <>
           <NodeResizeControl
             position="right"
@@ -129,16 +129,12 @@ function FileNodeView({ id, data, selected }: NodeProps<FileNode>): React.JSX.El
 
       {/* colored header band, same chrome as chats and notes */}
       <div
-        style={{ backgroundColor: isPage ? palette.bg : `${palette.bg}D9` }}
-        className={`${isPage ? '' : DRAG_HEADER} flex shrink-0 items-center gap-2 px-3 py-1.5 ${
-          isPage
-            ? 'border-b border-(--np-edge)'
-            : data.minimized
-              ? 'rounded-[13px]'
-              : 'rounded-t-[13px] border-b border-(--np-edge)'
+        style={{ backgroundColor: `${palette.bg}D9` }}
+        className={`${DRAG_HEADER} flex shrink-0 items-center gap-2 px-3 py-1.5 ${
+          data.minimized ? 'rounded-[13px]' : 'rounded-t-[13px] border-b border-(--np-edge)'
         }`}
       >
-        {!data.minimized && !isPage && (
+        {!data.minimized && (
           <button
             type="button"
             onClick={() => toggleMinimize(id)}
@@ -148,18 +144,7 @@ function FileNodeView({ id, data, selected }: NodeProps<FileNode>): React.JSX.El
             <Minus className="h-[25px] w-[25px]" />
           </button>
         )}
-        <button
-          type="button"
-          onClick={togglePage}
-          title={isPage ? 'Exit full page (Esc)' : 'Open full page'}
-          className={CHIP_BUTTON}
-        >
-          {isPage ? (
-            <Shrink className="h-[25px] w-[25px]" />
-          ) : (
-            <Expand className="h-[25px] w-[25px]" />
-          )}
-        </button>
+        <PanelChips mode={mode} open={open} />
         {editingTitle && !data.minimized ? (
           <input
             ref={titleRef}
@@ -208,42 +193,19 @@ function FileNodeView({ id, data, selected }: NodeProps<FileNode>): React.JSX.El
         </div>
       </div>
 
-      {!data.minimized && (
-        // Images: the whole body is a drag surface — grab anywhere to move
-        // the node. PDFs: the body is the viewer (scroll, not drag) — only
-        // the header band moves the node, like chats and notes.
-        <div
-          className={`${isPdf || isPage ? '' : DRAG_HEADER} min-h-0 flex-1 overflow-hidden ${
-            isPage ? '' : 'rounded-b-[13px]'
-          }`}
-        >
-          {isPdf && data.file ? (
-            // keyed on the path: a different file is a fresh viewer, never a reload
-            <PdfViewer key={data.file} file={data.file} focused={!!selected || isPage} />
-          ) : isPdf ? (
-            <div className="flex h-full w-full flex-col items-center justify-center gap-2 text-(--np-deep)">
-              <FileText className="h-10 w-10 opacity-60" />
-              <span className="max-w-full truncate px-3 text-[15px] opacity-70">
-                PDF attaching…
-              </span>
-            </div>
-          ) : data.dataUrl ? (
-            <img
-              src={data.dataUrl}
-              alt={data.title}
-              draggable={false}
-              className="h-full w-full object-contain select-none"
-            />
-          ) : (
-            <div className="flex h-full w-full flex-col items-center justify-center gap-2 text-neutral-400">
-              <ImageOff className="h-8 w-8" />
-              <span className="max-w-full truncate px-3 text-[13px]">
-                {data.file ?? 'Image missing'}
-              </span>
-            </div>
-          )}
-        </div>
-      )}
+      {!data.minimized &&
+        (docked ? (
+          <DockedStub onClick={collapse} />
+        ) : (
+          // Images: the whole body is a drag surface — grab anywhere to move
+          // the node. PDFs: the body is the viewer (scroll, not drag) — only
+          // the header band moves the node, like chats and notes.
+          <div
+            className={`${isPdf ? '' : DRAG_HEADER} min-h-0 flex-1 overflow-hidden rounded-b-[13px]`}
+          >
+            <FileBody id={id} focused={!!selected} />
+          </div>
+        ))}
     </div>
   )
 }

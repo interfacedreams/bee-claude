@@ -14,8 +14,8 @@ export function useSpawn(): (kind: 'chat' | 'note' | 'file' | 'link') => void {
 
   return useCallback(
     (kind) => {
-      const { folder, placing, expanded } = useCanvasStore.getState()
-      if (!folder?.current || expanded) return // no spawning under a full-page node
+      const { folder, placing } = useCanvasStore.getState()
+      if (!folder?.current) return
       if (placing === kind) {
         setPlacing(null)
       } else if (kind === 'file') {

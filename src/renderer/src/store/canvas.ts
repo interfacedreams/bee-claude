@@ -116,6 +116,10 @@ export type FileNode = Node<FileData, 'file'>
 export type LinkNode = Node<LinkData, 'link'>
 export type CanvasNode = ChatNode | NoteNode | FileNode | LinkNode
 
+// How a node is opened out of its card: docked to the right ('panel') or
+// covering the window ('full'). See CanvasState.expanded.
+export type PanelMode = 'panel' | 'full'
+
 export const isChat = (n: CanvasNode): n is ChatNode => n.type === 'chat'
 export const isNote = (n: CanvasNode): n is NoteNode => n.type === 'note'
 export const isFile = (n: CanvasNode): n is FileNode => n.type === 'file'
@@ -332,28 +336,15 @@ interface CanvasState {
   // until a click on a chat commits the edge — or any other click / Esc cancels.
   ctxConnectSource: string | null
   setCtxConnectSource: (id: string | null) => void
-  // Runtime-only: one node promoted to a full-page view — resized to a
-  // near-fullscreen frame at zoom 1, canvas locked, Esc exits. `prior` is
-  // everything to put back on exit; saves substitute it (see buildDoc), so a
-  // quit mid-page never persists page geometry.
-  expanded: {
-    id: string
-    prior: {
-      width?: number
-      height?: number
-      minimized?: boolean
-      savedHeight?: number
-      viewport: Viewport
-    }
-  } | null
-  // Promote a node to a page. Returns the viewport to animate to (null if
-  // the node is gone or another node already holds the page).
-  expandNode: (id: string) => Viewport | null
-  // Exit page mode: restore the node's frame; returns the viewport to restore.
-  collapseExpanded: () => Viewport | null
-  // Window resized while a page is up: refit the page rect to the new window.
-  // Returns the viewport to snap to (null when no node holds the page).
-  relayoutExpanded: () => Viewport | null
+  // Runtime-only: the node open out of its canvas card — either right-docked
+  // ('panel', the canvas stays live beside it) or covering the window ('full').
+  // Both render the same body; only the container's size differs, so flipping
+  // modes never remounts a webview. The card shows a stub while open — a
+  // webview can only be mounted once. Esc or a chip closes it; the frame is
+  // never touched.
+  expanded: { id: string; mode: PanelMode } | null
+  expandNode: (id: string, mode?: PanelMode) => void
+  collapseExpanded: () => void
   requestDelete: (id: string) => void
   cancelDelete: () => void
   deleteChat: (id: string, cascade: boolean) => void
@@ -387,7 +378,6 @@ interface CanvasState {
   toggleResearch: (id: string) => void
   respondPermission: (id: string, requestId: string, allow: boolean) => void
   forkChat: (nodeId: string) => string | null
-  distillChat: (nodeId: string) => Promise<string | null>
   // Context edges: a note, file, or link feeding a chat's system prompt
   // (note/file/link → chat only).
   addContextEdge: (sourceId: string, chatId: string) => void
@@ -397,25 +387,6 @@ interface CanvasState {
   load: () => Promise<Viewport | null>
   persistSoon: () => void
   persistThread: (id: string) => void
-}
-
-// The page rect in screen px for a full-page node: a full-height reading
-// strip, centered — PDF-page proportions, not edge-to-edge. Zoom is exactly
-// 1, so the node renders at native CSS pixels — text and webviews stay
-// crisp. The viewport pins the node's flow position to the rect's screen
-// corner.
-function pageRect(position: { x: number; y: number }): {
-  pageW: number
-  pageH: number
-  viewport: Viewport
-} {
-  const pageW = Math.min(window.innerWidth - 96, 900)
-  const pageH = window.innerHeight
-  return {
-    pageW,
-    pageH,
-    viewport: { x: (window.innerWidth - pageW) / 2 - position.x, y: -position.y, zoom: 1 }
-  }
 }
 
 // Model choice is an app-wide preference, not part of any one canvas —
@@ -446,38 +417,12 @@ export const useCanvasStore = create<CanvasState>((set, get) => {
     }))
   }
 
-  // Content is about to grow this node, so its fixed height gets released
-  // (auto-size up to the growthCap set alongside). A page-expanded node must
-  // keep its page frame instead — release the height in the exit snapshot, so
-  // auto-growth kicks in when the page closes rather than mid-page.
-  const releasedHeight = (s: CanvasState, n: CanvasNode): number | undefined =>
-    s.expanded?.id === n.id ? n.height : undefined
-  const releaseOnExitPatch = (s: CanvasState, id: string): Partial<CanvasState> =>
-    s.expanded?.id === id
-      ? {
-          expanded: {
-            ...s.expanded,
-            prior: { ...s.expanded.prior, height: undefined, savedHeight: undefined }
-          }
-        }
-      : {}
-
   const buildDoc = (): CanvasDoc => {
-    const { nodes, edges, viewport, expanded } = get()
+    const { nodes, edges, viewport } = get()
     return {
       version: 1,
       nodes: nodes.map((n) => {
-        // A page-expanded node saves its pre-expansion frame, never the page one.
-        const f =
-          expanded && n.id === expanded.id
-            ? expanded.prior
-            : {
-                width: n.width,
-                height: n.height,
-                minimized: n.data.minimized,
-                savedHeight: n.data.savedHeight
-              }
-        const height = f.minimized ? f.savedHeight : f.height
+        const height = n.data.minimized ? n.data.savedHeight : n.height
         return {
           id: n.id,
           ...(isNote(n)
@@ -490,12 +435,12 @@ export const useCanvasStore = create<CanvasState>((set, get) => {
                   ? { kind: 'research' as const }
                   : {}),
           position: n.position,
-          width: f.width ?? NODE_W,
+          width: n.width ?? NODE_W,
           ...(height != null ? { height } : {}),
           title: n.data.title,
           ...(n.data.updatedAt != null ? { updatedAt: n.data.updatedAt } : {}),
           ...(n.data.color ? { color: n.data.color } : {}),
-          ...(f.minimized ? { minimized: true } : {}),
+          ...(n.data.minimized ? { minimized: true } : {}),
           ...(!isFile(n) && !isLink(n) && n.data.sessionId ? { sessionId: n.data.sessionId } : {}),
           ...(isChat(n) && n.data.forkOf ? { forkOf: n.data.forkOf } : {}),
           ...(isChat(n) && n.data.injectedImages?.length
@@ -504,7 +449,7 @@ export const useCanvasStore = create<CanvasState>((set, get) => {
         }
       }),
       edges,
-      viewport: expanded ? expanded.prior.viewport : viewport
+      viewport
     }
   }
 
@@ -728,69 +673,12 @@ export const useCanvasStore = create<CanvasState>((set, get) => {
       localStorage.setItem(MODEL_STORAGE_KEY, model)
     },
 
-    expandNode: (id) => {
-      const node = get().nodes.find((n) => n.id === id)
-      if (!node || get().expanded) return null
-      const { pageW, pageH, viewport } = pageRect(node.position)
-      const prior = {
-        width: node.width,
-        height: node.height,
-        minimized: node.data.minimized,
-        savedHeight: node.data.savedHeight,
-        viewport: get().viewport
-      }
-      set((s) => ({
-        expanded: { id, prior },
-        nodes: s.nodes.map((n) =>
-          n.id === id
-            ? ({
-                ...n,
-                width: pageW,
-                height: pageH,
-                data: { ...n.data, minimized: false, savedHeight: undefined }
-              } as CanvasNode)
-            : n
-        )
-      }))
-      return viewport
+    expandNode: (id, mode = 'panel') => {
+      if (!get().nodes.some((n) => n.id === id)) return
+      set({ expanded: { id, mode } })
     },
 
-    relayoutExpanded: () => {
-      const ex = get().expanded
-      if (!ex) return null
-      const node = get().nodes.find((n) => n.id === ex.id)
-      if (!node) return null
-      const { pageW, pageH, viewport } = pageRect(node.position)
-      set((s) => ({
-        nodes: s.nodes.map((n) =>
-          n.id === ex.id ? ({ ...n, width: pageW, height: pageH } as CanvasNode) : n
-        )
-      }))
-      return viewport
-    },
-
-    collapseExpanded: () => {
-      const ex = get().expanded
-      if (!ex) return null
-      set((s) => ({
-        expanded: null,
-        nodes: s.nodes.map((n) =>
-          n.id === ex.id
-            ? ({
-                ...n,
-                width: ex.prior.width,
-                height: ex.prior.height,
-                data: {
-                  ...n.data,
-                  minimized: ex.prior.minimized,
-                  savedHeight: ex.prior.savedHeight
-                }
-              } as CanvasNode)
-            : n
-        )
-      }))
-      return ex.prior.viewport
-    },
+    collapseExpanded: () => set({ expanded: null }),
 
     requestDelete: (id) => set({ pendingDeleteId: id }),
 
@@ -801,7 +689,7 @@ export const useCanvasStore = create<CanvasState>((set, get) => {
       const doomed = cascade ? forkSubtree(get().edges, id) : new Set([id])
       set((s) => ({
         pendingDeleteId: null,
-        // deleting the page-expanded node ends page mode (canvas unlocks in place)
+        // deleting the panel-open node closes the panel with it
         ...(s.expanded && doomed.has(s.expanded.id) ? { expanded: null } : {}),
         nodes: s.nodes.filter((n) => !doomed.has(n.id)),
         edges: s.edges.filter((e) => !doomed.has(e.source) && !doomed.has(e.target))
@@ -964,12 +852,11 @@ export const useCanvasStore = create<CanvasState>((set, get) => {
       // editing releases any fixed height and caps growth to the screen.
       const growthCap = viewportFitHeight(get().viewport.zoom)
       set((s) => ({
-        ...releaseOnExitPatch(s, id),
         nodes: s.nodes.map((n) =>
           n.id === id
             ? ({
                 ...n,
-                height: releasedHeight(s, n),
+                height: undefined,
                 data: { ...n.data, content, growthCap, updatedAt: Date.now() }
               } as CanvasNode)
             : n
@@ -1054,59 +941,6 @@ export const useCanvasStore = create<CanvasState>((set, get) => {
       return node.id
     },
 
-    // Distill the chat into a fresh note: fork the chat's session at its tip
-    // (the whole conversation rides along — and the prompt cache with it) and
-    // run a note-editing turn that writes the key insights into the new
-    // note's file. The note is a free-stander: chat's color, no edges.
-    distillChat: async (nodeId) => {
-      const parent = get().nodes.find((n) => n.id === nodeId)
-      if (!parent || !isChat(parent) || parent.data.status === 'streaming') return null
-      const anchor = [...parent.data.messages]
-        .reverse()
-        .find((m) => m.role === 'assistant' && m.uuid)
-      const sessionId = parent.data.sessionId
-      if (!anchor?.uuid || !sessionId) return null
-
-      const wanted = parent.data.title ? `${parent.data.title} — insights` : 'Key insights'
-      // Right of the chat, same level — deliberately dumb placement
-      // (overlapping neighbors is fine). Spawned unselected, and nobody's
-      // selection is touched: sharing a selection with the chat would make
-      // React Flow drag the two around as a unit.
-      const p = boxOf(parent)
-      const node = makeNoteNode(
-        { x: p.x + p.w + GAP, y: p.y },
-        {
-          title: wanted,
-          color: parent.data.color,
-          status: 'streaming',
-          growthCap: viewportFitHeight(get().viewport.zoom),
-          updatedAt: Date.now()
-        }
-      )
-      set((s) => ({ nodes: [...s.nodes, node] }))
-      persist()
-
-      // The editing turn needs the note's file on disk under its real title
-      // (create allocates "Untitled"; rename moves it, dodging collisions).
-      await window.api.note.create(node.id)
-      const slot = await window.api.note.rename(node.id, wanted)
-      if (slot && slot.title !== wanted) patchData(node.id, { title: slot.title })
-      persist() // canvas.json picks up the filename from main
-
-      void window.api.thread.send({
-        nodeId: node.id,
-        text:
-          'Distill the conversation so far into its key insights. Write a markdown ' +
-          'bulleted list of 5-10 insights into the note — each one concise, specific, ' +
-          'and substantive. No preamble and no headings, just the list.',
-        model: get().model,
-        kind: 'note',
-        noteTitle: slot?.title ?? wanted,
-        forkFrom: { sessionId, messageUuid: anchor.uuid }
-      })
-      return node.id
-    },
-
     addContextEdge: (sourceId, chatId) => {
       const s = get()
       const src = s.nodes.find((n) => n.id === sourceId)
@@ -1175,13 +1009,12 @@ export const useCanvasStore = create<CanvasState>((set, get) => {
       // viewport — once the node hits the cap, the transcript scrolls instead.
       const growthCap = viewportFitHeight(get().viewport.zoom)
       set((s) => ({
-        ...releaseOnExitPatch(s, id),
         nodes: s.nodes.map((n) =>
           n.id === id
             ? ({
                 ...n,
                 // release any fixed height so the node grows with the reply (up to the cap)
-                height: releasedHeight(s, n),
+                height: undefined,
                 data: {
                   ...n.data,
                   messages: [...node.data.messages, userMsg, assistantMsg],
@@ -1250,12 +1083,11 @@ export const useCanvasStore = create<CanvasState>((set, get) => {
 
       const growthCap = viewportFitHeight(get().viewport.zoom)
       set((s) => ({
-        ...releaseOnExitPatch(s, id),
         nodes: s.nodes.map((n) =>
           n.id === id
             ? ({
                 ...n,
-                height: releasedHeight(s, n),
+                height: undefined,
                 data: {
                   ...n.data,
                   messages,
@@ -1302,13 +1134,12 @@ export const useCanvasStore = create<CanvasState>((set, get) => {
 
       const growthCap = viewportFitHeight(get().viewport.zoom)
       set((s) => ({
-        ...releaseOnExitPatch(s, id),
         nodes: s.nodes.map((n) =>
           n.id === id
             ? ({
                 ...n,
                 // release any fixed height so the note grows with the AI's edits
-                height: releasedHeight(s, n),
+                height: undefined,
                 data: {
                   ...n.data,
                   draft: '',

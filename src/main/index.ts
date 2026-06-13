@@ -13,6 +13,7 @@ import { promises as fs, readFileSync, constants as fsConstants } from 'fs'
 import { tmpdir } from 'os'
 import { basename, extname, isAbsolute, join, relative, resolve } from 'path'
 import { electronApp, optimizer, is } from '@electron-toolkit/utils'
+import { ElectronBlocker, adsAndTrackingLists } from '@ghostery/adblocker-electron'
 import { query, type SDKUserMessage } from '@anthropic-ai/claude-agent-sdk'
 import icon from '../../resources/icon.png?asset'
 import {
@@ -565,6 +566,69 @@ function registerPermissionSettingsIpc(): void {
       return permissionSettings
     }
   )
+}
+
+// --- Ad blocking ----------------------------------------------------------
+// Network-level ad/tracker blocking (the EasyList family) on the shared
+// browse partition, so every tab guest gets it. Cosmetic filtering stays off
+// on purpose: it would register a preload in the guests, and the
+// will-attach-webview hardening wants guests preload-free — network blocking
+// alone catches the bulk anyway. The compiled engine caches to userData, so
+// only the first launch (or a list refresh) hits the network.
+
+const adblockSettingsFile = (): string => join(app.getPath('userData'), 'adblock.json')
+
+let adblockEnabled = true
+let adblockEngine: ElectronBlocker | null = null
+
+async function readAdblockEnabled(): Promise<boolean> {
+  try {
+    // on by default — only an explicit { enabled: false } turns it off
+    return JSON.parse(await fs.readFile(adblockSettingsFile(), 'utf8')).enabled !== false
+  } catch {
+    return true
+  }
+}
+
+function applyAdblock(): void {
+  if (!adblockEngine) return
+  const browse = session.fromPartition(BROWSE_PARTITION)
+  if (adblockEnabled) {
+    adblockEngine.enableBlockingInSession(browse) // idempotent
+  } else if (adblockEngine.isBlockingEnabled(browse)) {
+    adblockEngine.disableBlockingInSession(browse)
+  }
+}
+
+async function initAdblock(): Promise<void> {
+  adblockEnabled = await readAdblockEnabled()
+  try {
+    adblockEngine = await ElectronBlocker.fromLists(
+      fetch,
+      adsAndTrackingLists,
+      { loadCosmeticFilters: false, enableCompression: true },
+      {
+        path: join(app.getPath('userData'), 'adblock-engine.bin'),
+        read: fs.readFile,
+        write: fs.writeFile
+      }
+    )
+    applyAdblock()
+  } catch (err) {
+    // offline with a cold cache — tabs just browse unblocked this launch
+    console.error('adblock: failed to load filter lists', err)
+  }
+}
+
+function registerAdblockIpc(): void {
+  ipcMain.handle('adblock:get', (): boolean => adblockEnabled)
+
+  ipcMain.handle('adblock:set', async (_event, enabled: boolean): Promise<boolean> => {
+    adblockEnabled = enabled === true
+    applyAdblock()
+    await fs.writeFile(adblockSettingsFile(), JSON.stringify({ enabled: adblockEnabled }, null, 2))
+    return adblockEnabled
+  })
 }
 
 // Research mode: the lead agent of a chat turn may spawn these subagents.
@@ -1293,6 +1357,9 @@ app.whenReady().then(async () => {
       delete webPreferences.preload
       webPreferences.nodeIntegration = false
       webPreferences.contextIsolation = true
+      // A YouTube link opens to a paused player, not an auto-playing one:
+      // a guest can't start media until the user clicks/taps inside it.
+      webPreferences.autoplayPolicy = 'document-user-activation-required'
       if (!/^https?:\/\//i.test(params.src ?? '')) event.preventDefault()
     })
     if (contents.getType() === 'webview') {
