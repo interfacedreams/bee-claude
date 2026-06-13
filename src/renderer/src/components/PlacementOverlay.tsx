@@ -93,12 +93,12 @@ function ArmedOverlay({
             : addNodeAt(position)
     setPlacing(null)
     if (!node) return
-    // Placed while zoomed way out: come in to a readable zoom on the new node.
-    if (zoom < 1)
-      void setCenter(node.position.x + ghostW / 2, node.position.y + 150, {
-        zoom: 1,
-        duration: 250
-      })
+    // Center on the newborn node at a readable zoom — come in to 100% when
+    // zoomed out, but never zoom out from closer (and never page-expand).
+    void setCenter(node.position.x + ghostW / 2, node.position.y + 150, {
+      zoom: Math.max(zoom, 1),
+      duration: 250
+    })
   }
 
   // Two-finger pan / pinch must keep working while the overlay is up: clone

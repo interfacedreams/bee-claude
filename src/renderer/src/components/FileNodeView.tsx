@@ -4,13 +4,14 @@ import {
   NodeResizeControl,
   Position,
   ResizeControlVariant,
-  useReactFlow,
   type NodeProps
 } from '@xyflow/react'
-import { Expand, FileText, ImageOff, Minus, Pencil, Trash2 } from 'lucide-react'
+import { Expand, FileText, ImageOff, Minus, Pencil, Shrink, Trash2 } from 'lucide-react'
 import { useCanvasStore, MAX_NODE_H, type FileNode } from '../store/canvas'
 import { paletteFor } from '../lib/palette'
 import PdfViewer from './PdfViewer'
+import { usePageExpand } from '../lib/usePageExpand'
+import PageBackdrop from './PageBackdrop'
 import {
   CHIP_BUTTON,
   CTX_HANDLE_ID,
@@ -34,7 +35,7 @@ function FileNodeView({ id, data, selected }: NodeProps<FileNode>): React.JSX.El
   const toggleMinimize = useCanvasStore((s) => s.toggleMinimize)
   const setCtxConnectSource = useCanvasStore((s) => s.setCtxConnectSource)
   const armed = useCanvasStore((s) => s.ctxConnectSource === id)
-  const { fitView } = useReactFlow()
+  const { isPage, togglePage } = usePageExpand(id)
 
   const titleRef = useRef<HTMLInputElement>(null)
   const isPdf = data.kind === 'pdf'
@@ -54,24 +55,11 @@ function FileNodeView({ id, data, selected }: NodeProps<FileNode>): React.JSX.El
 
   const palette = paletteFor(data.color)
 
-  const expandAndCenter = (): void => {
-    const fit = (): void => {
-      void fitView({ nodes: [{ id }], duration: 300, padding: 0.1, maxZoom: 1 })
-    }
-    if (data.minimized) {
-      toggleMinimize(id)
-      // let React Flow re-measure the expanded node before fitting to it
-      setTimeout(fit, 50)
-    } else {
-      fit()
-    }
-  }
-
   return (
     <div
       style={
         {
-          backgroundColor: `${PAPER}D9`,
+          backgroundColor: isPage ? PAPER : `${PAPER}D9`, // solid as a page
           '--np-bg': palette.bg,
           '--np-edge': palette.edge,
           '--np-chip': `${palette.edge}99`,
@@ -80,10 +68,11 @@ function FileNodeView({ id, data, selected }: NodeProps<FileNode>): React.JSX.El
           '--np-ring': `${palette.accent}B3`
         } as React.CSSProperties
       }
-      className={`flex h-full w-full flex-col rounded-[14px] border border-(--np-edge) shadow-md ${
-        selected ? 'ring-2 ring-(--np-ring)' : ''
-      }`}
+      className={`flex h-full w-full flex-col border border-(--np-edge) shadow-md ${
+        isPage ? '' : 'rounded-[14px]'
+      } ${selected ? 'ring-2 ring-(--np-ring)' : ''}`}
     >
+      {isPage && <PageBackdrop onExit={togglePage} />}
       {/* hidden layout anchors (left/right) for any future edges */}
       <Handle type="target" position={Position.Left} isConnectable={false} style={HIDDEN_HANDLE} />
       <Handle type="source" position={Position.Right} isConnectable={false} style={HIDDEN_HANDLE} />
@@ -107,7 +96,7 @@ function FileNodeView({ id, data, selected }: NodeProps<FileNode>): React.JSX.El
         style={ctxHandleStyle(palette.accent, 'bottom')}
       />
 
-      {!data.minimized && (
+      {!data.minimized && !isPage && (
         <>
           <NodeResizeControl
             position="right"
@@ -140,12 +129,16 @@ function FileNodeView({ id, data, selected }: NodeProps<FileNode>): React.JSX.El
 
       {/* colored header band, same chrome as chats and notes */}
       <div
-        style={{ backgroundColor: `${palette.bg}D9` }}
-        className={`${DRAG_HEADER} flex shrink-0 items-center gap-2 px-3 py-1.5 ${
-          data.minimized ? 'rounded-[13px]' : 'rounded-t-[13px] border-b border-(--np-edge)'
+        style={{ backgroundColor: isPage ? palette.bg : `${palette.bg}D9` }}
+        className={`${isPage ? '' : DRAG_HEADER} flex shrink-0 items-center gap-2 px-3 py-1.5 ${
+          isPage
+            ? 'border-b border-(--np-edge)'
+            : data.minimized
+              ? 'rounded-[13px]'
+              : 'rounded-t-[13px] border-b border-(--np-edge)'
         }`}
       >
-        {!data.minimized && (
+        {!data.minimized && !isPage && (
           <button
             type="button"
             onClick={() => toggleMinimize(id)}
@@ -157,11 +150,15 @@ function FileNodeView({ id, data, selected }: NodeProps<FileNode>): React.JSX.El
         )}
         <button
           type="button"
-          onClick={expandAndCenter}
-          title={data.minimized ? 'Expand' : 'Zoom to fit'}
+          onClick={togglePage}
+          title={isPage ? 'Exit full page (Esc)' : 'Open full page'}
           className={CHIP_BUTTON}
         >
-          <Expand className="h-[25px] w-[25px]" />
+          {isPage ? (
+            <Shrink className="h-[25px] w-[25px]" />
+          ) : (
+            <Expand className="h-[25px] w-[25px]" />
+          )}
         </button>
         {editingTitle && !data.minimized ? (
           <input
@@ -216,11 +213,13 @@ function FileNodeView({ id, data, selected }: NodeProps<FileNode>): React.JSX.El
         // the node. PDFs: the body is the viewer (scroll, not drag) — only
         // the header band moves the node, like chats and notes.
         <div
-          className={`${isPdf ? '' : DRAG_HEADER} min-h-0 flex-1 overflow-hidden rounded-b-[13px]`}
+          className={`${isPdf || isPage ? '' : DRAG_HEADER} min-h-0 flex-1 overflow-hidden ${
+            isPage ? '' : 'rounded-b-[13px]'
+          }`}
         >
           {isPdf && data.file ? (
             // keyed on the path: a different file is a fresh viewer, never a reload
-            <PdfViewer key={data.file} file={data.file} focused={!!selected} />
+            <PdfViewer key={data.file} file={data.file} focused={!!selected || isPage} />
           ) : isPdf ? (
             <div className="flex h-full w-full flex-col items-center justify-center gap-2 text-(--np-deep)">
               <FileText className="h-10 w-10 opacity-60" />

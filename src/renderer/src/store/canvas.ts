@@ -16,6 +16,7 @@ import type {
   TurnUsage
 } from '../../../shared/types'
 import { nextColorId } from '../lib/palette'
+import { extractPageMarkdown } from '../lib/pageText'
 
 export const NODE_W = 600
 export const MAX_NODE_H = 1280
@@ -331,6 +332,28 @@ interface CanvasState {
   // until a click on a chat commits the edge — or any other click / Esc cancels.
   ctxConnectSource: string | null
   setCtxConnectSource: (id: string | null) => void
+  // Runtime-only: one node promoted to a full-page view — resized to a
+  // near-fullscreen frame at zoom 1, canvas locked, Esc exits. `prior` is
+  // everything to put back on exit; saves substitute it (see buildDoc), so a
+  // quit mid-page never persists page geometry.
+  expanded: {
+    id: string
+    prior: {
+      width?: number
+      height?: number
+      minimized?: boolean
+      savedHeight?: number
+      viewport: Viewport
+    }
+  } | null
+  // Promote a node to a page. Returns the viewport to animate to (null if
+  // the node is gone or another node already holds the page).
+  expandNode: (id: string) => Viewport | null
+  // Exit page mode: restore the node's frame; returns the viewport to restore.
+  collapseExpanded: () => Viewport | null
+  // Window resized while a page is up: refit the page rect to the new window.
+  // Returns the viewport to snap to (null when no node holds the page).
+  relayoutExpanded: () => Viewport | null
   requestDelete: (id: string) => void
   cancelDelete: () => void
   deleteChat: (id: string, cascade: boolean) => void
@@ -376,6 +399,25 @@ interface CanvasState {
   persistThread: (id: string) => void
 }
 
+// The page rect in screen px for a full-page node: a full-height reading
+// strip, centered — PDF-page proportions, not edge-to-edge. Zoom is exactly
+// 1, so the node renders at native CSS pixels — text and webviews stay
+// crisp. The viewport pins the node's flow position to the rect's screen
+// corner.
+function pageRect(position: { x: number; y: number }): {
+  pageW: number
+  pageH: number
+  viewport: Viewport
+} {
+  const pageW = Math.min(window.innerWidth - 96, 900)
+  const pageH = window.innerHeight
+  return {
+    pageW,
+    pageH,
+    viewport: { x: (window.innerWidth - pageW) / 2 - position.x, y: -position.y, zoom: 1 }
+  }
+}
+
 // Model choice is an app-wide preference, not part of any one canvas —
 // it lives in localStorage rather than canvas.json.
 const MODEL_STORAGE_KEY = 'bee-claude:model'
@@ -404,12 +446,38 @@ export const useCanvasStore = create<CanvasState>((set, get) => {
     }))
   }
 
+  // Content is about to grow this node, so its fixed height gets released
+  // (auto-size up to the growthCap set alongside). A page-expanded node must
+  // keep its page frame instead — release the height in the exit snapshot, so
+  // auto-growth kicks in when the page closes rather than mid-page.
+  const releasedHeight = (s: CanvasState, n: CanvasNode): number | undefined =>
+    s.expanded?.id === n.id ? n.height : undefined
+  const releaseOnExitPatch = (s: CanvasState, id: string): Partial<CanvasState> =>
+    s.expanded?.id === id
+      ? {
+          expanded: {
+            ...s.expanded,
+            prior: { ...s.expanded.prior, height: undefined, savedHeight: undefined }
+          }
+        }
+      : {}
+
   const buildDoc = (): CanvasDoc => {
-    const { nodes, edges, viewport } = get()
+    const { nodes, edges, viewport, expanded } = get()
     return {
       version: 1,
       nodes: nodes.map((n) => {
-        const height = n.data.minimized ? n.data.savedHeight : n.height
+        // A page-expanded node saves its pre-expansion frame, never the page one.
+        const f =
+          expanded && n.id === expanded.id
+            ? expanded.prior
+            : {
+                width: n.width,
+                height: n.height,
+                minimized: n.data.minimized,
+                savedHeight: n.data.savedHeight
+              }
+        const height = f.minimized ? f.savedHeight : f.height
         return {
           id: n.id,
           ...(isNote(n)
@@ -422,12 +490,12 @@ export const useCanvasStore = create<CanvasState>((set, get) => {
                   ? { kind: 'research' as const }
                   : {}),
           position: n.position,
-          width: n.width ?? NODE_W,
+          width: f.width ?? NODE_W,
           ...(height != null ? { height } : {}),
           title: n.data.title,
           ...(n.data.updatedAt != null ? { updatedAt: n.data.updatedAt } : {}),
           ...(n.data.color ? { color: n.data.color } : {}),
-          ...(n.data.minimized ? { minimized: true } : {}),
+          ...(f.minimized ? { minimized: true } : {}),
           ...(!isFile(n) && !isLink(n) && n.data.sessionId ? { sessionId: n.data.sessionId } : {}),
           ...(isChat(n) && n.data.forkOf ? { forkOf: n.data.forkOf } : {}),
           ...(isChat(n) && n.data.injectedImages?.length
@@ -436,7 +504,7 @@ export const useCanvasStore = create<CanvasState>((set, get) => {
         }
       }),
       edges,
-      viewport
+      viewport: expanded ? expanded.prior.viewport : viewport
     }
   }
 
@@ -497,7 +565,8 @@ export const useCanvasStore = create<CanvasState>((set, get) => {
       edges: [],
       viewport: { x: 0, y: 0, zoom: 1 },
       placing: null,
-      pendingFile: null
+      pendingFile: null,
+      expanded: null
     })
     const vp = await get().load()
     return vp ?? { x: 0, y: 0, zoom: 1 } // fresh folder: reset the view
@@ -538,10 +607,12 @@ export const useCanvasStore = create<CanvasState>((set, get) => {
           : []
       })
 
-  // Links wired to a chat go along as bare URLs — main lists them in the
-  // system prompt with an instruction to WebFetch each before the first
-  // answer, so no content is read (or cached) here. A link whose URL hasn't
-  // been committed yet sits out.
+  // Links wired to a chat: each send reads the tab's rendered page out of its
+  // live <webview> guest as markdown — what the user sees is what the model
+  // gets, so bot walls and JS-only pages that defeat a plain fetch don't
+  // matter. A link whose guest can't be read (tab minimized, page hung) goes
+  // along as a bare URL and main falls back to the WebFetch instruction.
+  // A link whose URL hasn't been committed yet sits out.
   const contextLinksFor = (id: string): ContextLink[] =>
     get()
       .edges.filter((e) => e.kind === 'context' && e.target === id)
@@ -557,6 +628,14 @@ export const useCanvasStore = create<CanvasState>((set, get) => {
             ]
           : []
       })
+
+  const withPageContent = (links: ContextLink[]): Promise<ContextLink[]> =>
+    Promise.all(
+      links.map(async (l) => {
+        const content = await extractPageMarkdown(l.id, l.url)
+        return content ? { ...l, content } : l
+      })
+    )
 
   // A fresh node takes over both kinds of focus: it becomes the selected node
   // (everything else deselects) and focusDraft moves the keyboard into it.
@@ -619,6 +698,7 @@ export const useCanvasStore = create<CanvasState>((set, get) => {
     placing: null,
     pendingFile: null,
     ctxConnectSource: null,
+    expanded: null,
 
     // The pending image lives and dies with file-placement mode.
     setPlacing: (kind) =>
@@ -648,6 +728,70 @@ export const useCanvasStore = create<CanvasState>((set, get) => {
       localStorage.setItem(MODEL_STORAGE_KEY, model)
     },
 
+    expandNode: (id) => {
+      const node = get().nodes.find((n) => n.id === id)
+      if (!node || get().expanded) return null
+      const { pageW, pageH, viewport } = pageRect(node.position)
+      const prior = {
+        width: node.width,
+        height: node.height,
+        minimized: node.data.minimized,
+        savedHeight: node.data.savedHeight,
+        viewport: get().viewport
+      }
+      set((s) => ({
+        expanded: { id, prior },
+        nodes: s.nodes.map((n) =>
+          n.id === id
+            ? ({
+                ...n,
+                width: pageW,
+                height: pageH,
+                data: { ...n.data, minimized: false, savedHeight: undefined }
+              } as CanvasNode)
+            : n
+        )
+      }))
+      return viewport
+    },
+
+    relayoutExpanded: () => {
+      const ex = get().expanded
+      if (!ex) return null
+      const node = get().nodes.find((n) => n.id === ex.id)
+      if (!node) return null
+      const { pageW, pageH, viewport } = pageRect(node.position)
+      set((s) => ({
+        nodes: s.nodes.map((n) =>
+          n.id === ex.id ? ({ ...n, width: pageW, height: pageH } as CanvasNode) : n
+        )
+      }))
+      return viewport
+    },
+
+    collapseExpanded: () => {
+      const ex = get().expanded
+      if (!ex) return null
+      set((s) => ({
+        expanded: null,
+        nodes: s.nodes.map((n) =>
+          n.id === ex.id
+            ? ({
+                ...n,
+                width: ex.prior.width,
+                height: ex.prior.height,
+                data: {
+                  ...n.data,
+                  minimized: ex.prior.minimized,
+                  savedHeight: ex.prior.savedHeight
+                }
+              } as CanvasNode)
+            : n
+        )
+      }))
+      return ex.prior.viewport
+    },
+
     requestDelete: (id) => set({ pendingDeleteId: id }),
 
     cancelDelete: () => set({ pendingDeleteId: null }),
@@ -657,6 +801,8 @@ export const useCanvasStore = create<CanvasState>((set, get) => {
       const doomed = cascade ? forkSubtree(get().edges, id) : new Set([id])
       set((s) => ({
         pendingDeleteId: null,
+        // deleting the page-expanded node ends page mode (canvas unlocks in place)
+        ...(s.expanded && doomed.has(s.expanded.id) ? { expanded: null } : {}),
         nodes: s.nodes.filter((n) => !doomed.has(n.id)),
         edges: s.edges.filter((e) => !doomed.has(e.source) && !doomed.has(e.target))
       }))
@@ -818,11 +964,12 @@ export const useCanvasStore = create<CanvasState>((set, get) => {
       // editing releases any fixed height and caps growth to the screen.
       const growthCap = viewportFitHeight(get().viewport.zoom)
       set((s) => ({
+        ...releaseOnExitPatch(s, id),
         nodes: s.nodes.map((n) =>
           n.id === id
             ? ({
                 ...n,
-                height: undefined,
+                height: releasedHeight(s, n),
                 data: { ...n.data, content, growthCap, updatedAt: Date.now() }
               } as CanvasNode)
             : n
@@ -982,6 +1129,7 @@ export const useCanvasStore = create<CanvasState>((set, get) => {
     discardNode: (id) => {
       const node = get().nodes.find((n) => n.id === id)
       set((s) => ({
+        ...(s.expanded?.id === id ? { expanded: null } : {}),
         nodes: s.nodes.filter((n) => n.id !== id),
         edges: s.edges.filter((e) => e.source !== id && e.target !== id)
       }))
@@ -1027,12 +1175,13 @@ export const useCanvasStore = create<CanvasState>((set, get) => {
       // viewport — once the node hits the cap, the transcript scrolls instead.
       const growthCap = viewportFitHeight(get().viewport.zoom)
       set((s) => ({
+        ...releaseOnExitPatch(s, id),
         nodes: s.nodes.map((n) =>
           n.id === id
             ? ({
                 ...n,
                 // release any fixed height so the node grows with the reply (up to the cap)
-                height: undefined,
+                height: releasedHeight(s, n),
                 data: {
                   ...n.data,
                   messages: [...node.data.messages, userMsg, assistantMsg],
@@ -1062,20 +1211,24 @@ export const useCanvasStore = create<CanvasState>((set, get) => {
       const newFileIds = contextFiles.filter((f) => f.isNew).map((f) => f.id)
       if (newFileIds.length > 0) pendingFileInjections.set(id, newFileIds)
       else pendingFileInjections.delete(id)
-      const contextLinks = contextLinksFor(id)
-
-      void window.api.thread.send({
-        nodeId: id,
-        text,
-        sessionId: node.data.sessionId,
-        model: get().model,
-        // first send of a forked node: fork the parent session at the anchor
-        ...(!node.data.sessionId && node.data.forkOf ? { forkFrom: node.data.forkOf } : {}),
-        ...(node.data.researchArmed ? { research: true } : {}),
-        ...(contextNotes.length > 0 ? { contextNotes } : {}),
-        ...(contextFiles.length > 0 ? { contextFiles } : {}),
-        ...(contextLinks.length > 0 ? { contextLinks } : {})
-      })
+      // Reading the tabs' rendered pages is async — the composer already
+      // cleared and the bubble is streaming-pending, so the await is invisible
+      // (and capped by pageText's extraction timeout).
+      void (async () => {
+        const contextLinks = await withPageContent(contextLinksFor(id))
+        void window.api.thread.send({
+          nodeId: id,
+          text,
+          sessionId: node.data.sessionId,
+          model: get().model,
+          // first send of a forked node: fork the parent session at the anchor
+          ...(!node.data.sessionId && node.data.forkOf ? { forkFrom: node.data.forkOf } : {}),
+          ...(node.data.researchArmed ? { research: true } : {}),
+          ...(contextNotes.length > 0 ? { contextNotes } : {}),
+          ...(contextFiles.length > 0 ? { contextFiles } : {}),
+          ...(contextLinks.length > 0 ? { contextLinks } : {})
+        })
+      })()
     },
 
     // Re-run a failed turn: same prompt, same session. The session resume may
@@ -1097,11 +1250,12 @@ export const useCanvasStore = create<CanvasState>((set, get) => {
 
       const growthCap = viewportFitHeight(get().viewport.zoom)
       set((s) => ({
+        ...releaseOnExitPatch(s, id),
         nodes: s.nodes.map((n) =>
           n.id === id
             ? ({
                 ...n,
-                height: undefined,
+                height: releasedHeight(s, n),
                 data: {
                   ...n.data,
                   messages,
@@ -1124,18 +1278,20 @@ export const useCanvasStore = create<CanvasState>((set, get) => {
       const newFileIds = contextFiles.filter((f) => f.isNew).map((f) => f.id)
       if (newFileIds.length > 0) pendingFileInjections.set(id, newFileIds)
       else pendingFileInjections.delete(id)
-      const contextLinks = contextLinksFor(id)
-      void window.api.thread.send({
-        nodeId: id,
-        text: lastUser.text,
-        sessionId: node.data.sessionId,
-        model: get().model,
-        // the failed turn may have been a fork's first send — fork again
-        ...(!node.data.sessionId && node.data.forkOf ? { forkFrom: node.data.forkOf } : {}),
-        ...(contextNotes.length > 0 ? { contextNotes } : {}),
-        ...(contextFiles.length > 0 ? { contextFiles } : {}),
-        ...(contextLinks.length > 0 ? { contextLinks } : {})
-      })
+      void (async () => {
+        const contextLinks = await withPageContent(contextLinksFor(id))
+        void window.api.thread.send({
+          nodeId: id,
+          text: lastUser.text,
+          sessionId: node.data.sessionId,
+          model: get().model,
+          // the failed turn may have been a fork's first send — fork again
+          ...(!node.data.sessionId && node.data.forkOf ? { forkFrom: node.data.forkOf } : {}),
+          ...(contextNotes.length > 0 ? { contextNotes } : {}),
+          ...(contextFiles.length > 0 ? { contextFiles } : {}),
+          ...(contextLinks.length > 0 ? { contextLinks } : {})
+        })
+      })()
     },
 
     sendNote: async (id) => {
@@ -1146,12 +1302,13 @@ export const useCanvasStore = create<CanvasState>((set, get) => {
 
       const growthCap = viewportFitHeight(get().viewport.zoom)
       set((s) => ({
+        ...releaseOnExitPatch(s, id),
         nodes: s.nodes.map((n) =>
           n.id === id
             ? ({
                 ...n,
                 // release any fixed height so the note grows with the AI's edits
-                height: undefined,
+                height: releasedHeight(s, n),
                 data: {
                   ...n.data,
                   draft: '',

@@ -726,20 +726,45 @@ function registerThreadIpc(): void {
               'messages themselves — answer from what you see in them. Never try ' +
               'to read them from disk or search the project for them.'
             : ''
-        // Connected links carry no content at all — just the URL in the
-        // system prompt plus an instruction to WebFetch it before the first
-        // answer. The fetched page lands in the session transcript, so later
-        // turns (which resume the session) already hold it — the "unless
-        // already fetched" clause is what stands in for injectedImages-style
-        // bookkeeping. Deliberately no pre-fetching or caching on the node:
-        // the fetch happens in the open, as a visible tool call.
+        // Connected links ride the system prompt like notes do: the renderer
+        // reads each tab's rendered page out of its live <webview> guest as
+        // markdown (so bot walls and JS-only pages that blank a plain fetch
+        // don't matter — the model reads what the user sees), refreshed on
+        // every send. Navigating the tab is one cache miss on the prefix,
+        // same as editing a note. A link that arrived without content (tab
+        // minimized, page hung) falls back to the original contract: bare
+        // URL plus an instruction to WebFetch it, the fetched page living in
+        // the session transcript from then on.
         const validLinks = (contextLinks ?? []).filter(
           (l) => typeof l.url === 'string' && isHttpUrl(l.url)
         )
-        const linksAppend =
-          validLinks.length > 0
+        // The renderer caps extraction at 80k chars — re-clamp here since the
+        // content steers straight into the system prompt.
+        const liveLinks = validLinks.flatMap((l) =>
+          typeof l.content === 'string' && l.content.trim()
+            ? [{ ...l, content: l.content.slice(0, 100_000) }]
+            : []
+        )
+        const fetchLinks = validLinks.filter(
+          (l) => !(typeof l.content === 'string' && l.content.trim())
+        )
+        const linksAppend = [
+          liveLinks.length > 0
+            ? 'The user attached web pages to this conversation. Each <page> block below is ' +
+              "the page's rendered text, read out of the user's own browser tab and refreshed " +
+              'on every message — this IS the live page, so answer from it and never WebFetch ' +
+              'a URL whose content is already here.\n\n' +
+              liveLinks
+                .map(
+                  (l) =>
+                    `<page title=${JSON.stringify(l.title)} url=${JSON.stringify(l.url)}>\n` +
+                    `${l.content}\n</page>`
+                )
+                .join('\n')
+            : '',
+          fetchLinks.length > 0
             ? 'The user attached web pages to this conversation:\n' +
-              validLinks
+              fetchLinks
                 .map(
                   (l) => `<page title=${JSON.stringify(l.title)} url=${JSON.stringify(l.url)} />`
                 )
@@ -748,6 +773,9 @@ function registerThreadIpc(): void {
               'conversation already contains its fetched content from an earlier turn ' +
               '(never re-fetch a page you already hold). Answer from the fetched content.'
             : ''
+        ]
+          .filter(Boolean)
+          .join('\n\n')
         const systemAppend = [
           contextAppend,
           filesAppend,

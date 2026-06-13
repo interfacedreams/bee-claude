@@ -19,7 +19,9 @@ import ForkEdge from './ForkEdge'
 import ContextEdge from './ContextEdge'
 import ContextConnectOverlay from './ContextConnectOverlay'
 import BeeIcon from './BeeIcon'
-import TopBar from './TopBar'
+import ActionsLegend from './ActionsLegend'
+import ModelSelector from './ModelSelector'
+import FolderChip from './FolderChip'
 import Sidebar from './Sidebar'
 import AuthKeyButton from './AuthKeyButton'
 import SettingsButton from './SettingsButton'
@@ -59,6 +61,9 @@ function CanvasInner(): React.JSX.Element {
   const storeEdges = useCanvasStore((s) => s.edges)
   const loaded = useCanvasStore((s) => s.loaded)
   const folder = useCanvasStore((s) => s.folder)
+  // A full-page node freezes the canvas around it: no pan/zoom/drag/spawn
+  // until Esc (or the expand chip) collapses it back to its frame.
+  const expandedId = useCanvasStore((s) => s.expanded?.id ?? null)
   const onNodesChange = useCanvasStore((s) => s.onNodesChange)
   const addContextEdge = useCanvasStore((s) => s.addContextEdge)
   const addNodeAt = useCanvasStore((s) => s.addNodeAt)
@@ -68,7 +73,7 @@ function CanvasInner(): React.JSX.Element {
   const setStoreViewport = useCanvasStore((s) => s.setViewport)
   const init = useCanvasStore((s) => s.init)
   const chooseFolder = useCanvasStore((s) => s.chooseFolder)
-  const { setViewport, fitView, screenToFlowPosition } = useReactFlow()
+  const { setViewport, setCenter, getViewport, fitView, screenToFlowPosition } = useReactFlow()
   const spawn = useSpawn()
 
   useEffect(() => {
@@ -82,10 +87,39 @@ function CanvasInner(): React.JSX.Element {
     if (vp) void setViewport(vp)
   }, [chooseFolder, setViewport])
 
+  // While a node holds the page, resizing the window refits the page rect —
+  // node frame and viewport snap (no animation) so they track the live drag.
+  useEffect(() => {
+    if (!expandedId) return
+    const onResize = (): void => {
+      const vp = useCanvasStore.getState().relayoutExpanded()
+      if (vp) void setViewport(vp)
+    }
+    window.addEventListener('resize', onResize)
+    return () => window.removeEventListener('resize', onResize)
+  }, [expandedId, setViewport])
+
+  // Leave page mode and restore the pre-page viewport — Esc and the floating
+  // "Esc to close" pill share this.
+  const exitPage = useCallback(() => {
+    const vp = useCanvasStore.getState().collapseExpanded()
+    if (vp) void setViewport(vp, { duration: 300 })
+  }, [setViewport])
+
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent): void => {
+      // Esc is the only way out of a full-page node (plus the backdrop/pill).
+      // Inputs that consume Esc themselves (title rename, the tab address
+      // box) preventDefault, and armed placement / click-to-connect own Esc
+      // via their overlays.
+      if (e.key === 'Escape' && !e.defaultPrevented) {
+        const s = useCanvasStore.getState()
+        if (s.expanded && !s.placing && !s.ctxConnectSource) exitPage()
+        return
+      }
       if (e.metaKey || e.ctrlKey) {
         if (e.key === '0') {
+          if (useCanvasStore.getState().expanded) return // viewport is locked to the page
           e.preventDefault()
           void fitView({ padding: 0.1, duration: 250 })
         } else if (e.key === 'n' || e.key === 'N') {
@@ -108,7 +142,7 @@ function CanvasInner(): React.JSX.Element {
     }
     window.addEventListener('keydown', onKeyDown)
     return () => window.removeEventListener('keydown', onKeyDown)
-  }, [fitView, spawn])
+  }, [exitPage, fitView, spawn])
 
   // Releasing a connection drag on (or near — connectionRadius snaps) a
   // chat's circle commits the note/file/link → chat context edge. Only note,
@@ -151,7 +185,8 @@ function CanvasInner(): React.JSX.Element {
       // composers, titles, and notes keep their normal paste
       const t = e.target as HTMLElement
       if (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable) return
-      if (!useCanvasStore.getState().folder?.current) return
+      const s = useCanvasStore.getState()
+      if (!s.folder?.current || s.expanded) return
       const dt = e.clipboardData
       if (!dt) return
 
@@ -209,7 +244,8 @@ function CanvasInner(): React.JSX.Element {
       const files = Array.from(e.dataTransfer.files)
       if (files.length === 0) return
       e.preventDefault()
-      if (!useCanvasStore.getState().folder?.current) return
+      const s = useCanvasStore.getState()
+      if (!s.folder?.current || s.expanded) return
       // Anchor like every other spawn: the cursor lands a couple rows into
       // the header. addDroppedFiles centers each node's width on the point.
       const p = screenToFlowPosition({ x: e.clientX, y: e.clientY })
@@ -230,131 +266,173 @@ function CanvasInner(): React.JSX.Element {
   )
 
   // Double-click on empty canvas: spawn a chat right there, under the cursor
-  // (a note with alt/option held).
+  // (a note with alt/option held), then center on it at a readable zoom —
+  // come in to 100% when zoomed out, never zoom out from closer.
   const handleDoubleClick = useCallback(
     (e: React.MouseEvent) => {
       if (!(e.target as HTMLElement).classList.contains('react-flow__pane')) return
+      if (useCanvasStore.getState().expanded) return
       const p = screenToFlowPosition({ x: e.clientX, y: e.clientY })
       const position = { x: p.x - NODE_W / 2, y: p.y - 24 }
       if (e.altKey) addNoteAt(position)
       else addNodeAt(position)
+      void setCenter(position.x + NODE_W / 2, position.y + 150, {
+        zoom: Math.max(getViewport().zoom, 1),
+        duration: 250
+      })
     },
-    [addNodeAt, addNoteAt, screenToFlowPosition]
+    [addNodeAt, addNoteAt, screenToFlowPosition, setCenter, getViewport]
   )
 
   return (
-    <div className="flex h-screen w-screen flex-col bg-[#FBFAF4]">
-      <TopBar />
-
-      <div
-        ref={wrapRef}
-        className="relative min-h-0 flex-1"
-        onDragOver={handleDragOver}
-        onDrop={handleDrop}
-        onMouseMove={(e) => {
-          lastMouse.current = { x: e.clientX, y: e.clientY }
-        }}
-        onMouseLeave={() => {
-          lastMouse.current = null
-        }}
-      >
-        {loaded && (
-          <ReactFlow
-            nodes={nodes}
-            edges={storeEdges.map((e) => {
-              const accent = paletteFor(nodes.find((n) => n.id === e.source)?.data.color).accent
-              if (e.kind === 'context') {
-                // context connectors run top circle → top circle in the
-                // note's accent, arrowhead marking which way context flows
-                return {
-                  id: e.id,
-                  source: e.source,
-                  target: e.target,
-                  sourceHandle: CTX_HANDLE_ID,
-                  targetHandle: CTX_HANDLE_ID,
-                  type: 'context',
-                  style: { stroke: accent, strokeWidth: 3 },
-                  markerEnd: {
-                    type: MarkerType.ArrowClosed,
-                    color: accent,
-                    width: 14,
-                    height: 14
-                  },
-                  focusable: false,
-                  selectable: false
-                }
-              }
+    <div
+      ref={wrapRef}
+      className="relative h-screen w-screen bg-[#FBFAF4]"
+      onDragOver={handleDragOver}
+      onDrop={handleDrop}
+      onMouseMove={(e) => {
+        lastMouse.current = { x: e.clientX, y: e.clientY }
+      }}
+      onMouseLeave={() => {
+        lastMouse.current = null
+      }}
+    >
+      {loaded && (
+        <ReactFlow
+          // the page node rides above every other node and edge
+          nodes={
+            expandedId
+              ? nodes.map((n) => (n.id === expandedId ? { ...n, zIndex: 10000 } : n))
+              : nodes
+          }
+          edges={storeEdges.map((e) => {
+            const accent = paletteFor(nodes.find((n) => n.id === e.source)?.data.color).accent
+            if (e.kind === 'context') {
+              // context connectors run top circle → top circle in the
+              // note's accent, arrowhead marking which way context flows
               return {
                 id: e.id,
                 source: e.source,
                 target: e.target,
-                type: 'fork',
-                data: { sourceMessageId: e.sourceMessageId },
-                // fork connectors take the parent chat's accent color;
-                // researcher connectors are dashed to read as ephemeral spawns
-                style: {
-                  stroke: accent,
-                  strokeWidth: 3,
-                  ...(nodes.find((n) => n.id === e.target)?.data.kind === 'research'
-                    ? { strokeDasharray: '6 4' }
-                    : {})
+                sourceHandle: CTX_HANDLE_ID,
+                targetHandle: CTX_HANDLE_ID,
+                type: 'context',
+                style: { stroke: accent, strokeWidth: 3 },
+                markerEnd: {
+                  type: MarkerType.ArrowClosed,
+                  color: accent,
+                  width: 14,
+                  height: 14
                 },
                 focusable: false,
                 selectable: false
               }
-            })}
-            onNodesChange={onNodesChange}
-            onConnect={handleConnect}
-            nodeTypes={nodeTypes}
-            edgeTypes={edgeTypes}
-            // connecting is opt-in per handle: only the ctx circles are live
-            // (the hidden fork anchors stay isConnectable={false})
-            connectionRadius={60}
-            connectionLineStyle={{ stroke: '#C9A227', strokeWidth: 3, strokeDasharray: '6 4' }}
-            // tap-to-connect is ours (ContextConnectOverlay), not React Flow's
-            connectOnClick={false}
-            minZoom={0.05}
-            // deep enough to read a PDF page's body text; PdfViewer
-            // re-rasterizes pages at the settled zoom so they stay crisp
-            maxZoom={4}
-            panOnScroll
-            zoomOnPinch
-            zoomOnDoubleClick={false}
-            deleteKeyCode={null}
-            onMoveEnd={(_, vp) => setStoreViewport(vp)}
-            onDoubleClick={handleDoubleClick}
+            }
+            return {
+              id: e.id,
+              source: e.source,
+              target: e.target,
+              type: 'fork',
+              data: { sourceMessageId: e.sourceMessageId },
+              // fork connectors take the parent chat's accent color;
+              // researcher connectors are dashed to read as ephemeral spawns
+              style: {
+                stroke: accent,
+                strokeWidth: 3,
+                ...(nodes.find((n) => n.id === e.target)?.data.kind === 'research'
+                  ? { strokeDasharray: '6 4' }
+                  : {})
+              },
+              focusable: false,
+              selectable: false
+            }
+          })}
+          onNodesChange={onNodesChange}
+          onConnect={handleConnect}
+          nodeTypes={nodeTypes}
+          edgeTypes={edgeTypes}
+          // connecting is opt-in per handle: only the ctx circles are live
+          // (the hidden fork anchors stay isConnectable={false})
+          connectionRadius={60}
+          connectionLineStyle={{ stroke: '#C9A227', strokeWidth: 3, strokeDasharray: '6 4' }}
+          // tap-to-connect is ours (ContextConnectOverlay), not React Flow's
+          connectOnClick={false}
+          minZoom={0.05}
+          // deep enough to read a PDF page's body text; PdfViewer
+          // re-rasterizes pages at the settled zoom so they stay crisp
+          maxZoom={4}
+          panOnScroll={!expandedId}
+          zoomOnScroll={!expandedId}
+          zoomOnPinch={!expandedId}
+          panOnDrag={!expandedId}
+          nodesDraggable={!expandedId}
+          zoomOnDoubleClick={false}
+          deleteKeyCode={null}
+          onMoveEnd={(_, vp) => setStoreViewport(vp)}
+          onDoubleClick={handleDoubleClick}
+        >
+          <Background variant={BackgroundVariant.Dots} gap={44} size={2.5} color="#CFC49F" />
+          <ContextConnectOverlay />
+        </ReactFlow>
+      )}
+
+      {loaded && !expandedId && (
+        <div className="absolute bottom-4 left-4 z-10 flex items-end gap-2">
+          {folder?.current && <Sidebar />}
+          <AuthKeyButton />
+          <SettingsButton />
+        </div>
+      )}
+
+      {loaded && <PlacementOverlay />}
+
+      {/* Corner legends replace the old app header. z-20 keeps them above
+            the placement layer (z-10), so an armed spawn button can still be
+            clicked to disarm — same as when the header sat over the canvas.
+            All corner chrome clears out while a node is showing full-page. */}
+      {loaded && folder?.current && !expandedId && (
+        <div className="absolute top-4 left-4 z-20">
+          <ActionsLegend />
+        </div>
+      )}
+      {!expandedId && (
+        <div className="absolute top-4 right-4 z-20 flex items-center gap-2">
+          {loaded && folder?.current && <ModelSelector />}
+          <FolderChip />
+        </div>
+      )}
+
+      {/* Page mode's one piece of chrome: how to get out. Clicking it works
+          too, same as the backdrop. */}
+      {expandedId && (
+        <button
+          type="button"
+          onClick={exitPage}
+          title="Back to the canvas"
+          className="absolute top-4 right-4 z-20 flex cursor-pointer items-center gap-1.5 rounded-full bg-black/55 px-3.5 py-2 text-[12px] font-medium text-white/90 transition-colors hover:bg-black/70"
+        >
+          <kbd className="rounded-[4px] border border-white/40 px-1.5 py-0.5 text-[11px] font-semibold">
+            Esc
+          </kbd>
+          to close
+        </button>
+      )}
+
+      {folder && !folder.current && (
+        <div className="flex h-full w-full flex-col items-center justify-center gap-4">
+          <BeeIcon className="h-16 w-16" />
+          <p className="text-[15px] text-[#92690B]">Pick a folder to start a canvas</p>
+          <button
+            type="button"
+            onClick={() => void handleChooseFolder()}
+            className="cursor-pointer rounded-[14px] border border-[#EDD27E] bg-[#FEF3C7] px-4 py-2 text-[14px] font-medium text-[#92690B] shadow-lg transition-colors hover:bg-[#FDE68A] active:scale-95"
           >
-            <Background variant={BackgroundVariant.Dots} gap={44} size={2.5} color="#CFC49F" />
-            <ContextConnectOverlay />
-          </ReactFlow>
-        )}
+            Open folder…
+          </button>
+        </div>
+      )}
 
-        {loaded && (
-          <div className="absolute bottom-4 left-4 z-10 flex items-end gap-2">
-            {folder?.current && <Sidebar />}
-            <AuthKeyButton />
-            <SettingsButton />
-          </div>
-        )}
-
-        {loaded && <PlacementOverlay />}
-
-        {folder && !folder.current && (
-          <div className="flex h-full w-full flex-col items-center justify-center gap-4">
-            <BeeIcon className="h-16 w-16" />
-            <p className="text-[15px] text-[#92690B]">Pick a folder to start a canvas</p>
-            <button
-              type="button"
-              onClick={() => void handleChooseFolder()}
-              className="cursor-pointer rounded-[14px] border border-[#EDD27E] bg-[#FEF3C7] px-4 py-2 text-[14px] font-medium text-[#92690B] shadow-lg transition-colors hover:bg-[#FDE68A] active:scale-95"
-            >
-              Open folder…
-            </button>
-          </div>
-        )}
-
-        <DeleteChatModal />
-      </div>
+      <DeleteChatModal />
     </div>
   )
 }

@@ -4,7 +4,6 @@ import {
   NodeResizeControl,
   Position,
   ResizeControlVariant,
-  useReactFlow,
   type NodeProps
 } from '@xyflow/react'
 import {
@@ -16,10 +15,14 @@ import {
   Pencil,
   RotateCw,
   Search,
+  Shrink,
   Trash2
 } from 'lucide-react'
 import { useCanvasStore, MAX_NODE_H, type LinkNode } from '../store/canvas'
 import { paletteFor } from '../lib/palette'
+import { registerGuest, unregisterGuest } from '../lib/pageText'
+import { usePageExpand } from '../lib/usePageExpand'
+import PageBackdrop from './PageBackdrop'
 import { BROWSE_PARTITION } from '../../../shared/types'
 import {
   CHIP_BUTTON,
@@ -52,6 +55,7 @@ interface WebviewEl extends HTMLElement {
   goForward(): void
   canGoBack(): boolean
   canGoForward(): boolean
+  executeJavaScript(code: string): Promise<unknown>
 }
 
 /** One box, two jobs: a URL navigates, anything else becomes a Google search
@@ -78,7 +82,7 @@ function LinkNodeView({ id, data, selected }: NodeProps<LinkNode>): React.JSX.El
   const toggleMinimize = useCanvasStore((s) => s.toggleMinimize)
   const setCtxConnectSource = useCanvasStore((s) => s.setCtxConnectSource)
   const armed = useCanvasStore((s) => s.ctxConnectSource === id)
-  const { fitView } = useReactFlow()
+  const { isPage, togglePage } = usePageExpand(id)
 
   const titleRef = useRef<HTMLInputElement>(null)
   const searchRef = useRef<HTMLInputElement>(null)
@@ -109,24 +113,11 @@ function LinkNodeView({ id, data, selected }: NodeProps<LinkNode>): React.JSX.El
 
   const palette = paletteFor(data.color)
 
-  const expandAndCenter = (): void => {
-    const fit = (): void => {
-      void fitView({ nodes: [{ id }], duration: 300, padding: 0.1, maxZoom: 1 })
-    }
-    if (data.minimized) {
-      toggleMinimize(id)
-      // let React Flow re-measure the expanded node before fitting to it
-      setTimeout(fit, 50)
-    } else {
-      fit()
-    }
-  }
-
   return (
     <div
       style={
         {
-          backgroundColor: `${PAPER}D9`,
+          backgroundColor: isPage ? PAPER : `${PAPER}D9`, // solid as a page
           '--np-bg': palette.bg,
           '--np-edge': palette.edge,
           '--np-chip': `${palette.edge}99`,
@@ -135,17 +126,19 @@ function LinkNodeView({ id, data, selected }: NodeProps<LinkNode>): React.JSX.El
           '--np-ring': `${palette.accent}B3`
         } as React.CSSProperties
       }
-      className={`flex h-full w-full flex-col rounded-[14px] border border-(--np-edge) shadow-md ${
-        selected ? 'ring-2 ring-(--np-ring)' : ''
-      }`}
+      className={`flex h-full w-full flex-col border border-(--np-edge) shadow-md ${
+        isPage ? '' : 'rounded-[14px]'
+      } ${selected ? 'ring-2 ring-(--np-ring)' : ''}`}
     >
+      {isPage && <PageBackdrop onExit={togglePage} />}
       {/* hidden layout anchors (left/right) for any future edges */}
       <Handle type="target" position={Position.Left} isConnectable={false} style={HIDDEN_HANDLE} />
       <Handle type="source" position={Position.Right} isConnectable={false} style={HIDDEN_HANDLE} />
       {/* the context connector: drag this circle onto a chat's circle — or
           tap it and the arrow follows the cursor until a click on a chat
           commits (ContextConnectOverlay) — to let that chat read this page
-          (the chat fetches it with WebFetch on its next reply) */}
+          (each send extracts the rendered page from this tab's guest;
+          WebFetch is the fallback when the guest isn't mounted) */}
       <Handle
         id={CTX_HANDLE_ID}
         type="source"
@@ -163,7 +156,7 @@ function LinkNodeView({ id, data, selected }: NodeProps<LinkNode>): React.JSX.El
         style={ctxHandleStyle(palette.accent, 'bottom')}
       />
 
-      {!data.minimized && data.url && (
+      {!data.minimized && !isPage && data.url && (
         <>
           <NodeResizeControl
             position="right"
@@ -191,94 +184,110 @@ function LinkNodeView({ id, data, selected }: NodeProps<LinkNode>): React.JSX.El
         </>
       )}
 
-      {/* colored header band, same chrome as chats, notes, and files */}
-      <div
-        style={{ backgroundColor: `${palette.bg}D9` }}
-        className={`${DRAG_HEADER} flex shrink-0 items-center gap-2 px-3 py-1.5 ${
-          data.minimized ? 'rounded-[13px]' : 'rounded-t-[13px] border-b border-(--np-edge)'
-        }`}
-      >
-        {!data.minimized && (
-          <button
-            type="button"
-            onClick={() => toggleMinimize(id)}
-            title="Minimize"
-            className={CHIP_BUTTON}
-          >
-            <Minus className="h-[25px] w-[25px]" />
-          </button>
-        )}
-        <button
-          type="button"
-          onClick={expandAndCenter}
-          title={data.minimized ? 'Expand' : 'Zoom to fit'}
-          className={CHIP_BUTTON}
+      {/* The colored header band only exists before a URL (drag/delete home
+          for the search box) and as the minimized chip — a live tab's browser
+          toolbar is its chrome, so a second bar would be redundant. */}
+      {(!data.url || data.minimized) && (
+        <div
+          style={{ backgroundColor: isPage ? palette.bg : `${palette.bg}D9` }}
+          className={`${isPage ? '' : DRAG_HEADER} flex shrink-0 items-center gap-2 px-3 py-1.5 ${
+            isPage
+              ? 'border-b border-(--np-edge)'
+              : data.minimized
+                ? 'rounded-[13px]'
+                : 'rounded-t-[13px] border-b border-(--np-edge)'
+          }`}
         >
-          <Expand className="h-[25px] w-[25px]" />
-        </button>
-        {editingTitle && !data.minimized ? (
-          <input
-            ref={titleRef}
-            value={data.title}
-            placeholder="Untitled tab"
-            onChange={(e) => setTitle(id, e.target.value)}
-            onBlur={() => setEditingTitle(false)}
-            onKeyDown={(e) => {
-              if (e.key === 'Enter' || e.key === 'Escape') {
-                e.preventDefault()
-                setEditingTitle(false)
-              }
-            }}
-            className="nodrag min-w-0 flex-1 cursor-text truncate bg-transparent text-[26px] font-medium text-(--np-deep) outline-none placeholder:text-(--np-deep) placeholder:opacity-50"
-          />
-        ) : (
-          <span
-            onDoubleClick={() => {
-              if (!data.minimized) setEditingTitle(true)
-            }}
-            title={data.minimized ? undefined : 'Double-click to rename'}
-            className={`min-w-0 flex-1 truncate text-[26px] font-medium text-(--np-deep) ${data.title ? '' : 'opacity-50'}`}
-          >
-            {data.title || 'Untitled tab'}
-          </span>
-        )}
-        {/* where the tab is right now — data.url tracks every navigation, so
-            this reads true even minimized or zoomed out (title is flex-1, so
-            the URL sits against the buttons) */}
-        {data.url && (
-          <span
-            title={data.url}
-            className="max-w-[45%] shrink-[2] truncate text-[17px] text-(--np-deep) opacity-60"
-          >
-            {data.url.replace(/^https?:\/\/(www\.)?/, '')}
-          </span>
-        )}
-        <div className="nodrag relative ml-auto flex shrink-0 items-center gap-1">
-          {!data.minimized && (
+          {!data.minimized && !isPage && (
             <button
               type="button"
-              onClick={() => setEditingTitle(true)}
-              title="Rename this tab"
+              onClick={() => toggleMinimize(id)}
+              title="Minimize"
               className={CHIP_BUTTON}
             >
-              <Pencil className="h-[25px] w-[25px]" />
+              <Minus className="h-[25px] w-[25px]" />
             </button>
           )}
           <button
             type="button"
-            onClick={() => requestDelete(id)}
-            title="Delete this tab"
+            onClick={togglePage}
+            title={isPage ? 'Exit full page (Esc)' : 'Open full page'}
             className={CHIP_BUTTON}
           >
-            <Trash2 className="h-[25px] w-[25px]" />
+            {isPage ? (
+              <Shrink className="h-[25px] w-[25px]" />
+            ) : (
+              <Expand className="h-[25px] w-[25px]" />
+            )}
           </button>
+          {editingTitle && !data.minimized ? (
+            <input
+              ref={titleRef}
+              value={data.title}
+              placeholder="Untitled tab"
+              onChange={(e) => setTitle(id, e.target.value)}
+              onBlur={() => setEditingTitle(false)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' || e.key === 'Escape') {
+                  e.preventDefault()
+                  setEditingTitle(false)
+                }
+              }}
+              className="nodrag min-w-0 flex-1 cursor-text truncate bg-transparent text-[26px] font-medium text-(--np-deep) outline-none placeholder:text-(--np-deep) placeholder:opacity-50"
+            />
+          ) : (
+            <span
+              onDoubleClick={() => {
+                if (!data.minimized) setEditingTitle(true)
+              }}
+              title={data.minimized ? undefined : 'Double-click to rename'}
+              className={`min-w-0 flex-1 truncate text-[26px] font-medium text-(--np-deep) ${data.title ? '' : 'opacity-50'}`}
+            >
+              {data.title || 'Untitled tab'}
+            </span>
+          )}
+          {/* where the tab is right now — data.url tracks every navigation, so
+            this reads true even minimized or zoomed out (title is flex-1, so
+            the URL sits against the buttons) */}
+          {data.url && (
+            <span
+              title={data.url}
+              className="max-w-[45%] shrink-[2] truncate text-[17px] text-(--np-deep) opacity-60"
+            >
+              {data.url.replace(/^https?:\/\/(www\.)?/, '')}
+            </span>
+          )}
+          <div className="nodrag relative ml-auto flex shrink-0 items-center gap-1">
+            {!data.minimized && (
+              <button
+                type="button"
+                onClick={() => setEditingTitle(true)}
+                title="Rename this tab"
+                className={CHIP_BUTTON}
+              >
+                <Pencil className="h-[25px] w-[25px]" />
+              </button>
+            )}
+            <button
+              type="button"
+              onClick={() => requestDelete(id)}
+              title="Delete this tab"
+              className={CHIP_BUTTON}
+            >
+              <Trash2 className="h-[25px] w-[25px]" />
+            </button>
+          </div>
         </div>
-      </div>
+      )}
 
       {!data.minimized && (
-        // The body is the page (scroll, not drag) — only the header band
-        // moves the node, like chats and notes.
-        <div className="min-h-0 flex-1 overflow-hidden rounded-b-[13px]">
+        // The body is the page (scroll, not drag) — the browser toolbar
+        // (or the birth-state header band) moves the node.
+        <div
+          className={`min-h-0 flex-1 overflow-hidden ${
+            isPage ? '' : data.url ? 'rounded-[13px]' : 'rounded-b-[13px]'
+          }`}
+        >
           {!data.url ? (
             <form
               className="flex h-full w-full items-center gap-2 px-3"
@@ -294,11 +303,18 @@ function LinkNodeView({ id, data, selected }: NodeProps<LinkNode>): React.JSX.El
                 onChange={(e) => setDraft(e.target.value)}
                 placeholder="Search Google or paste a link"
                 spellCheck={false}
-                className="nodrag nowheel min-w-0 flex-1 cursor-text rounded-[10px] border border-(--np-edge) bg-white px-3 py-2 text-[15px] text-neutral-800 outline-none placeholder:text-neutral-400 focus:ring-2 focus:ring-(--np-ring)"
+                className="nodrag min-w-0 flex-1 cursor-text rounded-[10px] border border-(--np-edge) bg-white px-3 py-2 text-[15px] text-neutral-800 outline-none placeholder:text-neutral-400 focus:ring-2 focus:ring-(--np-ring)"
               />
             </form>
           ) : (
-            <TabBrowser id={id} url={data.url} focused={!!selected} />
+            // full-page, the page always gets the pointer — no select-first click
+            <TabBrowser
+              id={id}
+              url={data.url}
+              focused={!!selected || isPage}
+              isPage={isPage}
+              togglePage={togglePage}
+            />
           )}
         </div>
       )}
@@ -335,11 +351,15 @@ const TOOL_BUTTON =
 function TabBrowser({
   id,
   url,
-  focused
+  focused,
+  isPage,
+  togglePage
 }: {
   id: string
   url: string
   focused: boolean
+  isPage: boolean
+  togglePage: () => void
 }): React.JSX.Element {
   const webviewRef = useRef<HTMLWebViewElement>(null)
   const inputRef = useRef<HTMLInputElement>(null)
@@ -360,6 +380,9 @@ function TabBrowser({
   useEffect(() => {
     const el = wv()
     if (!el) return
+    // While the guest lives, sends can read its rendered page (pageText) —
+    // a minimized tab unmounts the guest, so its link falls back to WebFetch.
+    registerGuest(id, el)
     const sync = (): void => {
       const current = el.getURL()
       setPageUrl(current)
@@ -391,6 +414,7 @@ function TabBrowser({
     el.addEventListener('did-stop-loading', onStop)
     el.addEventListener('did-fail-load', onFail)
     return () => {
+      unregisterGuest(id, el)
       el.removeEventListener('did-navigate', onNavigate)
       el.removeEventListener('did-navigate-in-page', sync)
       el.removeEventListener('did-start-loading', onStart)
@@ -412,10 +436,15 @@ function TabBrowser({
 
   return (
     <div className="flex h-full w-full flex-col">
-      {/* slim browser toolbar in the node's own chrome colors */}
+      {/* The toolbar IS the tab's header: drag surface, node color, and the
+          card controls (minimize / full page / delete) on the right. */}
       <div
-        style={{ backgroundColor: `${PAPER}D9` }}
-        className="flex shrink-0 items-center gap-1 border-b border-(--np-edge) px-2 py-1"
+        style={{
+          backgroundColor: isPage
+            ? 'var(--np-bg)'
+            : 'color-mix(in srgb, var(--np-bg) 85%, transparent)'
+        }}
+        className={`${isPage ? '' : DRAG_HEADER} flex shrink-0 items-center gap-1 border-b border-(--np-edge) px-2 py-1`}
       >
         <button
           type="button"
@@ -460,9 +489,39 @@ function TabBrowser({
             }}
             placeholder="Search Google or paste a link"
             spellCheck={false}
-            className="nodrag nowheel w-full cursor-text rounded-[8px] border border-(--np-edge) bg-white px-2.5 py-1 text-[14px] text-neutral-800 outline-none placeholder:text-neutral-400 focus:ring-2 focus:ring-(--np-ring)"
+            className="nodrag w-full cursor-text rounded-[8px] border border-(--np-edge) bg-white px-2.5 py-1 text-[14px] text-neutral-800 outline-none placeholder:text-neutral-400 focus:ring-2 focus:ring-(--np-ring)"
           />
         </form>
+        {!isPage && (
+          <button
+            type="button"
+            onClick={() => useCanvasStore.getState().toggleMinimize(id)}
+            title="Minimize"
+            className={TOOL_BUTTON}
+          >
+            <Minus className="h-[20px] w-[20px]" />
+          </button>
+        )}
+        <button
+          type="button"
+          onClick={togglePage}
+          title={isPage ? 'Exit full page (Esc)' : 'Open full page'}
+          className={TOOL_BUTTON}
+        >
+          {isPage ? (
+            <Shrink className="h-[20px] w-[20px]" />
+          ) : (
+            <Expand className="h-[20px] w-[20px]" />
+          )}
+        </button>
+        <button
+          type="button"
+          onClick={() => useCanvasStore.getState().requestDelete(id)}
+          title="Delete this tab"
+          className={TOOL_BUTTON}
+        >
+          <Trash2 className="h-[20px] w-[20px]" />
+        </button>
       </div>
 
       <div className="relative min-h-0 flex-1 bg-white">

@@ -167,14 +167,19 @@ export interface ContextFile {
   isNew?: boolean
 }
 
-/** A link (web page) wired to a chat by a context edge. No content rides the
- *  send — the system prompt carries the URL and tells the model to WebFetch it
- *  on its first response; the fetched page then lives in the session
- *  transcript like an injected file's bytes. */
+/** A link (web page) wired to a chat by a context edge. When the tab's
+ *  <webview> guest is alive at send time, the renderer extracts the rendered
+ *  page as markdown (Defuddle — the Obsidian clipper's extractor) and it rides
+ *  the system prompt like a note's content, refreshed every turn: the page the
+ *  model reads is the page the user sees, bot walls and JS-rendering
+ *  notwithstanding. Without content (tab minimized, page hung) the system
+ *  prompt falls back to carrying the URL with a WebFetch instruction. */
 export interface ContextLink {
   id: string
   title: string
   url: string
+  /** The rendered page as markdown, when the tab could be read at send time. */
+  content?: string
 }
 
 export interface ThreadSendArgs {

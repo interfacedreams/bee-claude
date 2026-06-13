@@ -4,13 +4,14 @@ import {
   NodeResizeControl,
   Position,
   ResizeControlVariant,
-  useReactFlow,
   type NodeProps
 } from '@xyflow/react'
-import { Expand, Minus, Pencil, Trash2 } from 'lucide-react'
+import { Expand, Minus, Pencil, Shrink, Trash2 } from 'lucide-react'
 import { useCanvasStore, MAX_NODE_H, type NoteNode } from '../store/canvas'
 import { paletteFor } from '../lib/palette'
 import { useForwardedWheel } from '../lib/useForwardedWheel'
+import { usePageExpand } from '../lib/usePageExpand'
+import PageBackdrop from './PageBackdrop'
 import {
   CHIP_BUTTON,
   CTX_HANDLE_ID,
@@ -35,7 +36,7 @@ function NoteNodeView({ id, data, selected }: NodeProps<NoteNode>): React.JSX.El
   const setCtxConnectSource = useCanvasStore((s) => s.setCtxConnectSource)
   const armed = useCanvasStore((s) => s.ctxConnectSource === id)
   const explicitHeight = useCanvasStore((s) => s.nodes.find((n) => n.id === id)?.height)
-  const { fitView } = useReactFlow()
+  const { isPage, togglePage } = usePageExpand(id)
 
   const titleRef = useRef<HTMLInputElement>(null)
   const editorRef = useRef<NoteEditorHandle>(null)
@@ -48,8 +49,8 @@ function NoteNodeView({ id, data, selected }: NodeProps<NoteNode>): React.JSX.El
   const blank = !data.content && !data.title && !data.sessionId
 
   // Scrolling the note body requires focus (the node is selected by clicking
-  // it); otherwise the wheel pans the canvas.
-  useForwardedWheel(scrollRef, !data.minimized, !!selected)
+  // it); otherwise the wheel pans the canvas. Full-page it always scrolls.
+  useForwardedWheel(scrollRef, !data.minimized, !!selected || isPage)
 
   // The title is static text (part of the header drag surface) until the user
   // enters rename mode via the pencil button or a double-click on the title.
@@ -84,25 +85,13 @@ function NoteNodeView({ id, data, selected }: NodeProps<NoteNode>): React.JSX.El
     return () => cancelAnimationFrame(raf)
   }, [editingTitle, clearFocusDraft, id])
 
-  const expandAndCenter = (): void => {
-    const fit = (): void => {
-      void fitView({ nodes: [{ id }], duration: 300, padding: 0.1, maxZoom: 1 })
-    }
-    if (data.minimized) {
-      toggleMinimize(id)
-      // let React Flow re-measure the expanded node before fitting to it
-      setTimeout(fit, 50)
-    } else {
-      fit()
-    }
-  }
-
   return (
     <div
       style={
         {
           maxHeight: explicitHeight ?? data.growthCap ?? MAX_NODE_H,
-          backgroundColor: `${PAPER}D9`, // paper fill at 85%, matching chat nodes
+          // paper fill at 85%, matching chat nodes — solid as a page
+          backgroundColor: isPage ? PAPER : `${PAPER}D9`,
           '--np-bg': palette.bg,
           '--np-edge': palette.edge,
           '--np-chip': `${palette.edge}99`,
@@ -111,10 +100,11 @@ function NoteNodeView({ id, data, selected }: NodeProps<NoteNode>): React.JSX.El
           '--np-ring': `${palette.accent}B3`
         } as React.CSSProperties
       }
-      className={`flex h-full w-full flex-col rounded-[14px] border border-(--np-edge) shadow-md ${
-        selected ? 'ring-2 ring-(--np-ring)' : ''
-      }`}
+      className={`flex h-full w-full flex-col border border-(--np-edge) shadow-md ${
+        isPage ? '' : 'rounded-[14px]'
+      } ${selected ? 'ring-2 ring-(--np-ring)' : ''}`}
     >
+      {isPage && <PageBackdrop onExit={togglePage} />}
       {/* hidden layout anchors (left/right) kept for any id-less edges */}
       <Handle type="target" position={Position.Left} isConnectable={false} style={HIDDEN_HANDLE} />
       <Handle type="source" position={Position.Right} isConnectable={false} style={HIDDEN_HANDLE} />
@@ -139,7 +129,7 @@ function NoteNodeView({ id, data, selected }: NodeProps<NoteNode>): React.JSX.El
         style={ctxHandleStyle(palette.accent, 'bottom', 'square')}
       />
 
-      {!data.minimized && (
+      {!data.minimized && !isPage && (
         <>
           <NodeResizeControl
             position="right"
@@ -175,12 +165,16 @@ function NoteNodeView({ id, data, selected }: NodeProps<NoteNode>): React.JSX.El
 
       {/* colored header band — the note's "tab of sticky tape" */}
       <div
-        style={{ backgroundColor: `${palette.bg}D9` }}
-        className={`${DRAG_HEADER} flex shrink-0 items-center gap-2 px-3 py-1.5 ${
-          data.minimized ? 'rounded-[13px]' : 'rounded-t-[13px] border-b border-(--np-edge)'
+        style={{ backgroundColor: isPage ? palette.bg : `${palette.bg}D9` }}
+        className={`${isPage ? '' : DRAG_HEADER} flex shrink-0 items-center gap-2 px-3 py-1.5 ${
+          isPage
+            ? 'border-b border-(--np-edge)'
+            : data.minimized
+              ? 'rounded-[13px]'
+              : 'rounded-t-[13px] border-b border-(--np-edge)'
         }`}
       >
-        {!data.minimized && (
+        {!data.minimized && !isPage && (
           <button
             type="button"
             onClick={() => toggleMinimize(id)}
@@ -192,11 +186,15 @@ function NoteNodeView({ id, data, selected }: NodeProps<NoteNode>): React.JSX.El
         )}
         <button
           type="button"
-          onClick={expandAndCenter}
-          title={data.minimized ? 'Expand' : 'Zoom to fit'}
+          onClick={togglePage}
+          title={isPage ? 'Exit full page (Esc)' : 'Open full page'}
           className={CHIP_BUTTON}
         >
-          <Expand className="h-[25px] w-[25px]" />
+          {isPage ? (
+            <Shrink className="h-[25px] w-[25px]" />
+          ) : (
+            <Expand className="h-[25px] w-[25px]" />
+          )}
         </button>
         {editingTitle && !data.minimized ? (
           <input
