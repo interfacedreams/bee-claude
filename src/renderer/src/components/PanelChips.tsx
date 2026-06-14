@@ -1,6 +1,7 @@
 import { Maximize2, Minimize2, PanelRightClose, PanelRightOpen } from 'lucide-react'
 import { CHIP_BUTTON } from '../lib/nodeChrome'
 import type { PanelMode } from '../store/canvas'
+import Tooltip from './Tooltip'
 
 /**
  * The two header chips every node card carries: open in the right-docked side
@@ -18,30 +19,24 @@ export default function PanelChips({
 }): React.JSX.Element {
   return (
     <>
-      <button
-        type="button"
-        onClick={() => open('panel')}
-        title={mode === 'panel' ? 'Close side panel (Esc)' : 'Open in side panel'}
-        className={CHIP_BUTTON}
-      >
-        {mode === 'panel' ? (
-          <PanelRightClose className="h-[25px] w-[25px]" />
-        ) : (
-          <PanelRightOpen className="h-[25px] w-[25px]" />
-        )}
-      </button>
-      <button
-        type="button"
-        onClick={() => open('full')}
-        title={mode === 'full' ? 'Close full screen (Esc)' : 'Open full screen'}
-        className={CHIP_BUTTON}
-      >
-        {mode === 'full' ? (
-          <Minimize2 className="h-[22px] w-[22px]" />
-        ) : (
-          <Maximize2 className="h-[22px] w-[22px]" />
-        )}
-      </button>
+      <Tooltip label={mode === 'panel' ? 'Close side panel (Esc)' : 'Open in side panel'}>
+        <button type="button" onClick={() => open('panel')} className={CHIP_BUTTON}>
+          {mode === 'panel' ? (
+            <PanelRightClose className="h-[25px] w-[25px]" />
+          ) : (
+            <PanelRightOpen className="h-[25px] w-[25px]" />
+          )}
+        </button>
+      </Tooltip>
+      <Tooltip label={mode === 'full' ? 'Close full screen (Esc)' : 'Open full screen'}>
+        <button type="button" onClick={() => open('full')} className={CHIP_BUTTON}>
+          {mode === 'full' ? (
+            <Minimize2 className="h-[22px] w-[22px]" />
+          ) : (
+            <Maximize2 className="h-[22px] w-[22px]" />
+          )}
+        </button>
+      </Tooltip>
     </>
   )
 }

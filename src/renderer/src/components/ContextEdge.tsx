@@ -3,8 +3,9 @@ import { X } from 'lucide-react'
 import { useCanvasStore } from '../store/canvas'
 
 /**
- * Context connector: note/file → chat, bottom circle to top circle, arrowhead
- * on the chat end. While it exists, the source rides the chat's sends (notes
+ * Context connector: note/file → chat, source's right circle to target's top
+ * circle, arrowhead on the chat end. While it exists, the source rides the
+ * chat's sends (notes
  * as system-prompt content; images and PDFs as image/document blocks injected
  * into the conversation once per session). The midpoint × disconnects it.
  */

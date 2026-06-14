@@ -1,12 +1,15 @@
-import { useEffect } from 'react'
-import { Settings, X } from 'lucide-react'
+import { useEffect, useState } from 'react'
+import { KeyRound, Settings, Wrench } from 'lucide-react'
 import { useSettingsStore } from '../store/settings'
+import AuthSection from './AuthSection'
+import TabbedModal, { type ModalTab } from './TabbedModal'
 
 /**
- * Gear-icon pill next to the key button. Opens the global settings modal:
- * app-wide permission toggles that apply to every folder and chat. Permission
- * prompts also deep-link here via their "global settings" link. Flipping a
- * toggle takes effect immediately — even a prompt already on screen resolves
+ * Gear-icon pill in the bottom-left toolbar. Opens the global settings modal,
+ * a tabbed panel covering app-wide configuration: the Claude subscription
+ * token and tool permission toggles that apply to every folder and chat.
+ * Permission prompts deep-link here via their "global settings" link. Flipping
+ * a toggle takes effect immediately — even a prompt already on screen resolves
  * itself if the new setting covers it.
  */
 function ToggleRow({
@@ -47,6 +50,13 @@ function ToggleRow({
   )
 }
 
+type Tab = 'subscription' | 'permissions'
+
+const TABS: ModalTab[] = [
+  { id: 'subscription', label: 'Subscription', icon: KeyRound },
+  { id: 'permissions', label: 'Permissions', icon: Wrench }
+]
+
 export default function SettingsButton(): React.JSX.Element {
   const open = useSettingsStore((s) => s.modalOpen)
   const setOpen = useSettingsStore((s) => s.setModalOpen)
@@ -54,6 +64,8 @@ export default function SettingsButton(): React.JSX.Element {
   const loadFailed = useSettingsStore((s) => s.loadFailed)
   const load = useSettingsStore((s) => s.load)
   const update = useSettingsStore((s) => s.update)
+
+  const [tab, setTab] = useState<Tab>('subscription')
 
   // Load on mount, and retry every time the modal opens unloaded.
   useEffect(() => {
@@ -74,57 +86,60 @@ export default function SettingsButton(): React.JSX.Element {
       </button>
 
       {open && (
-        <div
-          className="fixed inset-0 z-50 flex items-center justify-center bg-black/30"
-          onClick={() => setOpen(false)}
+        <TabbedModal
+          title="Settings"
+          titleIcon={Settings}
+          tabs={TABS}
+          active={tab}
+          onTab={(id) => setTab(id as Tab)}
+          onClose={() => setOpen(false)}
         >
-          <div
-            className="w-[440px] rounded-[14px] border border-[#E2DAC0] bg-[#FFFDF6] p-5 shadow-xl"
-            onClick={(e) => e.stopPropagation()}
-          >
-            <div className="mb-3 flex items-center justify-between">
-              <h2 className="flex items-center gap-2 text-[14px] font-semibold text-[#92690B]">
-                <Settings className="h-4 w-4" />
-                Global settings
-              </h2>
-              <button
-                type="button"
-                onClick={() => setOpen(false)}
-                className="flex h-6 w-6 cursor-pointer items-center justify-center rounded-md text-[#92690B] transition-colors hover:bg-[#F2EDD8]"
-              >
-                <X className="h-4 w-4" />
-              </button>
+          {tab === 'subscription' && (
+            <div>
+              <h3 className="mb-3 flex items-center gap-2 text-[14px] font-semibold text-[#92690B]">
+                <KeyRound className="h-4 w-4" />
+                Claude subscription
+              </h3>
+              <AuthSection />
             </div>
+          )}
 
-            <p className="mb-3 text-[12px] text-neutral-600">
-              Tool permissions for every folder and chat. Changes apply immediately — a prompt
-              already waiting on screen is answered too.
-            </p>
-
-            {permissions ? (
-              <div className="flex flex-col gap-1">
-                <ToggleRow
-                  label="Allow web search"
-                  description="Run WebSearch and WebFetch without asking each time."
-                  checked={permissions.allowWebSearch}
-                  onChange={(checked) => void update({ allowWebSearch: checked })}
-                />
-                <ToggleRow
-                  label="Auto-allow all tools"
-                  description="Skip permission prompts entirely — every tool runs unasked."
-                  checked={permissions.autoAllowAll}
-                  onChange={(checked) => void update({ autoAllowAll: checked })}
-                />
-              </div>
-            ) : loadFailed ? (
-              <p className="text-[12px] text-red-600">
-                Couldn’t load the settings — fully restart the app and try again.
+          {tab === 'permissions' && (
+            <div>
+              <h3 className="mb-2 flex items-center gap-2 text-[14px] font-semibold text-[#92690B]">
+                <Wrench className="h-4 w-4" />
+                Tool permissions
+              </h3>
+              <p className="mb-3 text-[12px] text-neutral-600">
+                Permissions for every folder and chat. Changes apply immediately — a prompt already
+                waiting on screen is answered too.
               </p>
-            ) : (
-              <p className="text-[12px] text-neutral-400">Loading…</p>
-            )}
-          </div>
-        </div>
+
+              {permissions ? (
+                <div className="flex flex-col gap-1">
+                  <ToggleRow
+                    label="Allow web search"
+                    description="Run WebSearch and WebFetch without asking each time."
+                    checked={permissions.allowWebSearch}
+                    onChange={(checked) => void update({ allowWebSearch: checked })}
+                  />
+                  <ToggleRow
+                    label="Auto-allow all tools"
+                    description="Skip permission prompts entirely — every tool runs unasked."
+                    checked={permissions.autoAllowAll}
+                    onChange={(checked) => void update({ autoAllowAll: checked })}
+                  />
+                </div>
+              ) : loadFailed ? (
+                <p className="text-[12px] text-red-600">
+                  Couldn’t load the settings — fully restart the app and try again.
+                </p>
+              ) : (
+                <p className="text-[12px] text-neutral-400">Loading…</p>
+              )}
+            </div>
+          )}
+        </TabbedModal>
       )}
     </>
   )

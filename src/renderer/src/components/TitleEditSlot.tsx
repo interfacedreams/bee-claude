@@ -1,6 +1,7 @@
 import { Pencil, TriangleAlert } from 'lucide-react'
 import { CHIP_BUTTON } from '../lib/nodeChrome'
 import { DUPLICATE_TITLE_HINT } from '../lib/titleGuard'
+import Tooltip from './Tooltip'
 
 // The header slot that lives just left of the transform/delete buttons. It
 // reuses one footprint across three states so nothing reflows when rename mode
@@ -33,8 +34,10 @@ export default function TitleEditSlot({
     )
   }
   return (
-    <button type="button" onClick={onEdit} title={renameHint} className={CHIP_BUTTON}>
-      <Pencil className="h-[25px] w-[25px]" />
-    </button>
+    <Tooltip label={renameHint}>
+      <button type="button" onClick={onEdit} className={CHIP_BUTTON}>
+        <Pencil className="h-[25px] w-[25px]" />
+      </button>
+    </Tooltip>
   )
 }

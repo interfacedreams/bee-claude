@@ -17,6 +17,7 @@ import DockedStub from './DockedStub'
 import PanelChips from './PanelChips'
 import TransformButton from './TransformButton'
 import TransformFrame from './TransformFrame'
+import Tooltip from './Tooltip'
 import {
   CHIP_BUTTON,
   CTX_HANDLE_ID,
@@ -35,6 +36,9 @@ function ChatNodeView({ id, data, selected }: NodeProps<ChatNode>): React.JSX.El
   const toggleMinimize = useCanvasStore((s) => s.toggleMinimize)
   const setCtxConnectSource = useCanvasStore((s) => s.setCtxConnectSource)
   const armed = useCanvasStore((s) => s.ctxConnectSource === id)
+  // While the transform composer is open, its tab covers the node's top; hide
+  // the top connector so its circle doesn't poke out over the tab seam.
+  const transforming = useCanvasStore((s) => s.transforming === id)
   // Explicit height only (user resize / restored from disk) — React Flow's own
   // `height` prop reports the *measured* height, which would pin the node at
   // whatever size it currently is and stop it from growing with new content.
@@ -125,7 +129,6 @@ function ChatNodeView({ id, data, selected }: NodeProps<ChatNode>): React.JSX.El
         {
           // the growth cap only limits auto-sizing; an explicit (user-resized) height wins
           maxHeight: explicitHeight ?? data.growthCap ?? MAX_NODE_H,
-          backgroundColor: palette.bg, // body fill, fully opaque
           '--np-bg': palette.bg,
           '--np-edge': palette.edge,
           '--np-chip': `${palette.edge}99`, // chip buttons at 60%
@@ -139,6 +142,17 @@ function ChatNodeView({ id, data, selected }: NodeProps<ChatNode>): React.JSX.El
       }`}
     >
       <TransformFrame id={id} />
+      {/* Opaque card fill. Sits above the transform wrapper's background (which
+          rides a deeper negative z) but below all card content, so the wrapper's
+          colored tab can never bleed through the card's top edge. As a child it
+          paints above the root's own background layer, which a plain
+          `backgroundColor` would not — the chat header is transparent, so the
+          fill has to win over the tab here. */}
+      <div
+        aria-hidden
+        className="absolute inset-0 rounded-[14px]"
+        style={{ backgroundColor: palette.bg, zIndex: -1 }}
+      />
       {/* invisible anchors so fork edges have somewhere to attach */}
       <Handle type="target" position={Position.Left} isConnectable={false} style={HIDDEN_HANDLE} />
       <Handle type="source" position={Position.Right} isConnectable={false} style={HIDDEN_HANDLE} />
@@ -146,7 +160,7 @@ function ChatNodeView({ id, data, selected }: NodeProps<ChatNode>): React.JSX.El
           Receive-only — a context arrow always starts at a note or image.
           Research transcripts can't send, so context would never reach a
           model; they get no circle. */}
-      {!isResearch && (
+      {!isResearch && !transforming && (
         <Handle
           id={CTX_HANDLE_ID}
           type="target"
@@ -160,12 +174,14 @@ function ChatNodeView({ id, data, selected }: NodeProps<ChatNode>): React.JSX.El
       )}
       {/* the output connector: drag this circle onto a note's top square — or
           tap it, then click a note — to let this chat read AND write that note.
-          Research chats can't edit, so they get no output port. */}
+          On the right so the chat's output reads left-to-right (context still
+          comes in from the top). Research chats can't edit, so they get no
+          output port. */}
       {!isResearch && (
         <Handle
           id={OUTPUT_HANDLE_ID}
           type="source"
-          position={Position.Bottom}
+          position={Position.Right}
           isConnectable
           isConnectableEnd={false}
           title="Drag — or tap, then click a note — to let this chat write that note"
@@ -174,7 +190,7 @@ function ChatNodeView({ id, data, selected }: NodeProps<ChatNode>): React.JSX.El
             setCtxConnectSource(armed ? null : id)
           }}
           className={`ctx-handle ${armed ? 'ctx-armed' : ''}`}
-          style={ctxHandleStyle(palette.accent, 'bottom', 'circle')}
+          style={ctxHandleStyle(palette.accent, 'right', 'circle')}
         />
       )}
 
@@ -218,14 +234,11 @@ function ChatNodeView({ id, data, selected }: NodeProps<ChatNode>): React.JSX.El
         }`}
       >
         {!data.minimized && (
-          <button
-            type="button"
-            onClick={() => toggleMinimize(id)}
-            title="Minimize"
-            className={CHIP_BUTTON}
-          >
-            <Minus className="h-[25px] w-[25px]" />
-          </button>
+          <Tooltip label="Minimize">
+            <button type="button" onClick={() => toggleMinimize(id)} className={CHIP_BUTTON}>
+              <Minus className="h-[25px] w-[25px]" />
+            </button>
+          </Tooltip>
         )}
         <PanelChips mode={mode} open={open} />
         {editingTitle && !data.minimized ? (
@@ -281,24 +294,18 @@ function ChatNodeView({ id, data, selected }: NodeProps<ChatNode>): React.JSX.El
             />
           )}
           {canFork && (
-            <button
-              type="button"
-              onClick={forkAndCenter}
-              title="Fork this chat from its latest message"
-              className={CHIP_BUTTON}
-            >
-              <GitFork className="h-[25px] w-[25px]" />
-            </button>
+            <Tooltip label="Fork this chat from its latest message">
+              <button type="button" onClick={forkAndCenter} className={CHIP_BUTTON}>
+                <GitFork className="h-[25px] w-[25px]" />
+              </button>
+            </Tooltip>
           )}
           {!data.minimized && <TransformButton id={id} />}
-          <button
-            type="button"
-            onClick={() => requestDelete(id)}
-            title="Delete this chat"
-            className={CHIP_BUTTON}
-          >
-            <Trash2 className="h-[25px] w-[25px]" />
-          </button>
+          <Tooltip label="Delete this chat">
+            <button type="button" onClick={() => requestDelete(id)} className={CHIP_BUTTON}>
+              <Trash2 className="h-[25px] w-[25px]" />
+            </button>
+          </Tooltip>
         </div>
       </div>
 

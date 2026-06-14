@@ -64,7 +64,6 @@ function LinkNodeView({ id, data, selected }: NodeProps<LinkNode>): React.JSX.El
     <div
       style={
         {
-          backgroundColor: PAPER,
           '--np-bg': palette.bg,
           '--np-edge': palette.edge,
           '--np-chip': `${palette.edge}99`,
@@ -78,6 +77,13 @@ function LinkNodeView({ id, data, selected }: NodeProps<LinkNode>): React.JSX.El
       }`}
     >
       <TransformFrame id={id} />
+      {/* Opaque card fill — above the transform tab (deeper negative z), below
+          all content, so the tab can't bleed through the card's corners/edges. */}
+      <div
+        aria-hidden
+        className="absolute inset-0 rounded-[14px]"
+        style={{ backgroundColor: PAPER, zIndex: -1 }}
+      />
       {/* hidden layout anchors (left/right) for any future edges */}
       <Handle type="target" position={Position.Left} isConnectable={false} style={HIDDEN_HANDLE} />
       <Handle type="source" position={Position.Right} isConnectable={false} style={HIDDEN_HANDLE} />
@@ -90,7 +96,7 @@ function LinkNodeView({ id, data, selected }: NodeProps<LinkNode>): React.JSX.El
       <Handle
         id={CTX_HANDLE_ID}
         type="source"
-        position={Position.Bottom}
+        position={Position.Right}
         isConnectable
         isConnectableEnd={false}
         title="Drag — or tap, then click a chat — to attach this page as context"
@@ -101,7 +107,7 @@ function LinkNodeView({ id, data, selected }: NodeProps<LinkNode>): React.JSX.El
           setCtxConnectSource(armed ? null : id)
         }}
         className={`ctx-handle ${armed ? 'ctx-armed' : ''}`}
-        style={ctxHandleStyle(palette.accent, 'bottom', 'square')}
+        style={ctxHandleStyle(palette.accent, 'right', 'square')}
       />
 
       {!data.minimized && data.url && (

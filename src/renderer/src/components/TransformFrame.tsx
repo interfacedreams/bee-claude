@@ -13,13 +13,15 @@ import BeeIcon from './BeeIcon'
  * node's sides or bottom. Sending runs deriveNote — the source feeds an
  * instruction and a fresh note appears to the right.
  *
- * Layering, back to front: the whole wrapper (header tab background + dashed
- * outline) → the node. The wrapper sits a negative z-index behind the node,
- * which is opaque, so only the protruding rim and the command bar above the
- * node show; everywhere the two overlap, the node card covers the wrapper.
- * (The card root carries `isolate`, so this negative z stays contained to the
- * node and never slips behind neighbors.) The command controls alone ride a
- * positive z so they stay on top of the bar.
+ * Layering, back to front: the header tab background (z -2) → the node's opaque
+ * paper fill (z -1, an explicit layer inside the card) → the node content. The
+ * tab sits a step deeper than the card fill, so everywhere the two overlap the
+ * card paints over the wrapper, leaving only the protruding rim and the command
+ * bar above the node. (The card root carries `isolate`, so these negative z
+ * values stay contained to the node and never slip behind neighbors.) The dashed
+ * outline rides z -1 too, but its border lives in the rim outside the card fill,
+ * so it stays visible. The command controls alone ride a positive z so they stay
+ * on top of the bar.
  *
  * The wrapper color previews where the result lands. Deriving a new note: the
  * frame wears a palette color chosen to differ from the source (contrastColorId)
@@ -37,8 +39,9 @@ const BAR = 50 // header height for the single-line input row (flow px)
 const TOGGLE_ROW = 58 // the target toggle strip above the input (note sources only)
 const TUCK = 20 // how far the tab extends down behind the node's top
 // The armed node is also selected, so it wears its 2px focus ring — sit the
-// dashed frame just outside that ring (2px out) on the sides and bottom.
-const DASH = 4
+// dashed frame just outside that ring (3px out) on the sides and bottom, so the
+// dash's inner edge clears the ring instead of touching it.
+const DASH = 5
 const OUTER_RADIUS = RADIUS + DASH // frame/tab corners
 
 function TransformComposer({ id }: { id: string }): React.JSX.Element {
@@ -99,8 +102,9 @@ function TransformComposer({ id }: { id: string }): React.JSX.Element {
   return (
     <>
       {/* the header tab background — rises BAR px above the node and tucks TUCK
-          px under its top. A negative z keeps it behind the node, so the card
-          covers the tucked-under part, leaving only the command bar above. */}
+          px under its top. z -2 keeps it behind the card's opaque fill (z -1),
+          so the card covers the tucked-under part, leaving only the command bar
+          above. */}
       <div
         className="nodrag"
         style={{
@@ -109,7 +113,7 @@ function TransformComposer({ id }: { id: string }): React.JSX.Element {
           left: -DASH,
           right: -DASH,
           height: bar + TUCK,
-          zIndex: -1,
+          zIndex: -2,
           background: wrap.bg,
           borderTopLeftRadius: OUTER_RADIUS,
           borderTopRightRadius: OUTER_RADIUS,

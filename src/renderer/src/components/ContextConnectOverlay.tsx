@@ -11,11 +11,11 @@ import {
 } from '../store/canvas'
 import { paletteFor } from '../lib/palette'
 
-// Click-to-connect: once a source's bottom circle is tapped (ctxConnectSource
+// Click-to-connect: once a source's right circle is tapped (ctxConnectSource
 // in the store), this overlay draws a faded arrow from that circle to the
 // cursor. Landing on a valid target snaps the arrow onto its top port — where
 // it stays, pulsing, until the cursor strays — and a click commits. Any other
-// click, or Escape, cancels. Two flavours share this geometry (source bottom →
+// click, or Escape, cancels. Two flavours share this geometry (source right →
 // target top): a resource (note/file/link) → chat context edge, and a chat →
 // note output edge. The source's kind picks which targets are valid.
 
@@ -28,10 +28,12 @@ const isCtxSource = (n: CanvasNode): boolean =>
 const isCtxTarget = (source: CanvasNode, n: CanvasNode): boolean =>
   isChat(source) ? isNote(n) : isChat(n) && n.data.kind !== 'research'
 
-// Circle geometry mirrors ctxHandleStyle: center 15px outside the node edge
-// (above for chats, below for notes), radius 12 — the pending arrow runs from
-// the note circle's bottom to the chat circle's top like a committed edge.
+// Circle geometry mirrors ctxHandleStyle: a target's input sits 15px above the
+// top edge; a source's output sits 19px past the right edge. Radius 12 — the
+// pending arrow runs from the source circle's right to the target circle's top
+// like a committed edge.
 const CIRCLE_OFFSET = 15
+const SOURCE_OFFSET = 19
 const CIRCLE_R = 12
 // Snap radius is SCREEN px (divided by zoom before hit-testing) so the
 // reach feels the same at every zoom level. The snap zone is a tight halo
@@ -54,10 +56,10 @@ const chatCircleTop = (n: CanvasNode): { x: number; y: number } => ({
   y: n.position.y - CIRCLE_OFFSET - CIRCLE_R - 3
 })
 
-// notes: circle below the bottom edge — the arrow leaves from its bottom
-const noteCircleBottom = (n: CanvasNode): { x: number; y: number } => ({
-  x: nodeCx(n),
-  y: n.position.y + (n.height ?? n.measured?.height ?? 0) + CIRCLE_OFFSET + CIRCLE_R
+// sources: circle past the right edge — the arrow leaves from its right side
+const sourceCircleRight = (n: CanvasNode): { x: number; y: number } => ({
+  x: n.position.x + (n.width ?? n.measured?.width ?? NODE_W) + SOURCE_OFFSET + CIRCLE_R,
+  y: n.position.y + (n.height ?? n.measured?.height ?? 0) / 2
 })
 
 function hits(n: CanvasNode, p: { x: number; y: number }, radius: number): boolean {
@@ -142,11 +144,11 @@ function PendingArrow({ sourceId }: { sourceId: string }): React.JSX.Element | n
   if (!t) return null // no cursor fix yet — nothing to draw
 
   const accent = paletteFor(sourceNode.data.color).accent
-  const s = noteCircleBottom(sourceNode)
+  const s = sourceCircleRight(sourceNode)
   const [path] = getBezierPath({
     sourceX: s.x,
     sourceY: s.y,
-    sourcePosition: Position.Bottom,
+    sourcePosition: Position.Right,
     targetX: t.x,
     targetY: t.y,
     targetPosition: Position.Top

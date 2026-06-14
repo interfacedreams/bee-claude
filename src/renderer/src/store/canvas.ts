@@ -22,6 +22,11 @@ import { extractPageMarkdown } from '../lib/pageText'
 
 export const NODE_W = 600
 export const MAX_NODE_H = 1280
+// The always-present CLAUDE.md node: a fixed-id note whose body is the folder's
+// CLAUDE.md. Main hard-maps this id to the root CLAUDE.md file. Injected on load
+// if absent (see ensureClaudeMd), never deletable/renamable/pinnable.
+export const CLAUDE_MD_ID = 'claude-md'
+const CLAUDE_MD_POS = { x: 360, y: 32 } // clear of the top-left canvas legends
 const MIN_GROW_H = 280
 export const GAP = 24
 // A derived note sits further right than a plain spawn — two background-dot
@@ -85,6 +90,19 @@ export interface NoteData {
   // Runtime-only: index into `versions` of the snapshot being viewed (read-
   // only). undefined means viewing the live, editable content.
   viewVersion?: number
+  // Pinned into the project memory index — every new chat sees this note in
+  // MEMORY.md and can read its file on demand.
+  pinned?: boolean
+  // The one persistent CLAUDE.md node (see CLAUDE_MD_ID): its body is the
+  // folder's CLAUDE.md. Always present, never deleted/renamed/pinned.
+  system?: 'claudeMd'
+  // 1-3 sentence index description (Haiku-generated, cached). The MEMORY.md
+  // line for a pinned note uses it.
+  description?: string
+  // Runtime-only: an agent edited this note's file while the user had unsaved
+  // changes — the fresh on-disk content, parked behind a "Reload" prompt
+  // rather than clobbering the user's edits.
+  externalEdit?: { content: string }
   status: 'idle' | 'streaming'
   draft: string // the AI-instruction composer
   lastReply?: string // the AI's brief commentary from its latest editing turn
@@ -415,6 +433,15 @@ interface CanvasState {
   // or bring one back to the front (snapshots current first, never destructive).
   setViewVersion: (id: string, index: number | undefined) => void
   restoreVersion: (id: string, index: number) => Promise<void>
+  // Pin/unpin a note into the project memory index. Pinning kicks off a
+  // description if the note has content and none yet.
+  togglePin: (id: string) => void
+  // Debounced regeneration of a pinned note's 1-3 sentence index description
+  // (Haiku one-shot). A no-op for unpinned or empty notes.
+  scheduleDescribe: (id: string) => void
+  // Apply an agent's on-disk edit that was parked behind the unsaved-edits
+  // guard (the "Reload" action on a note).
+  reloadExternalEdit: (id: string) => void
   send: (id: string) => void
   retry: (id: string) => void
   sendNote: (id: string) => Promise<void>
@@ -426,11 +453,7 @@ interface CanvasState {
   // the source (a chat forks its session; a note/file/link rides as context).
   // With inPlace (note sources only), skip the spawn and rewrite the source
   // note itself — the turn lands as a new version in its own history.
-  deriveNote: (
-    sourceId: string,
-    instruction: string,
-    inPlace?: boolean
-  ) => Promise<string | null>
+  deriveNote: (sourceId: string, instruction: string, inPlace?: boolean) => Promise<string | null>
   // Context edges: a note, file, or link feeding a chat's system prompt
   // (note/file/link → chat only).
   addContextEdge: (sourceId: string, chatId: string) => void
@@ -462,6 +485,8 @@ function loadEffort(): EffortId {
 let saveTimer: ReturnType<typeof setTimeout> | undefined
 // Debounced per-note autosave of live content (keystrokes → the note's file).
 const noteSaveTimers = new Map<string, ReturnType<typeof setTimeout>>()
+// Debounced per-note index-description regeneration (pinned notes only).
+const describeTimers = new Map<string, ReturnType<typeof setTimeout>>()
 // Researchers streaming right now: `${leadNodeId}:${toolUseId}` → child node id.
 // Mid-turn only, so it lives outside the store (no re-renders, never persisted).
 const researchChildren = new Map<string, string>()
@@ -488,7 +513,12 @@ export const useCanvasStore = create<CanvasState>((set, get) => {
         return {
           id: n.id,
           ...(isNote(n)
-            ? { kind: 'note' as const }
+            ? {
+                kind: 'note' as const,
+                ...(n.data.pinned ? { pinned: true } : {}),
+                ...(n.data.description ? { description: n.data.description } : {}),
+                ...(n.data.system ? { system: n.data.system } : {})
+              }
             : isFile(n)
               ? { kind: 'file' as const, ...(n.data.file ? { file: n.data.file } : {}) }
               : isLink(n)
@@ -581,6 +611,12 @@ export const useCanvasStore = create<CanvasState>((set, get) => {
   }
 
   const anyStreaming = (): boolean => get().nodes.some((n) => n.data.status === 'streaming')
+
+  // The persistent CLAUDE.md node refuses deletion, rename, and pinning.
+  const isClaudeMd = (id: string): boolean => {
+    const n = get().nodes.find((x) => x.id === id)
+    return !!n && isNote(n) && n.data.system === 'claudeMd'
+  }
 
   // Notes wired to a chat by context edges go along with every send — read
   // from the store, which always holds the freshest content (autosave
@@ -707,6 +743,20 @@ export const useCanvasStore = create<CanvasState>((set, get) => {
     return node
   }
 
+  // Guarantee the one persistent CLAUDE.md node is present. A no-op when it
+  // already is (the common reload path — main injects it into the doc for
+  // pre-feature canvases). When absent (a brand-new folder), synthesize it with
+  // the fixed id and ensure its root file exists.
+  const ensureClaudeMd = (nodes: CanvasNode[]): CanvasNode[] => {
+    if (nodes.some((n) => isNote(n) && n.data.system === 'claudeMd')) return nodes
+    const node: NoteNode = {
+      ...makeNoteNode(CLAUDE_MD_POS, { title: 'CLAUDE.md', system: 'claudeMd' }),
+      id: CLAUDE_MD_ID
+    }
+    void window.api.note.create(CLAUDE_MD_ID)
+    return [node, ...nodes]
+  }
+
   return {
     nodes: [],
     edges: [],
@@ -765,7 +815,10 @@ export const useCanvasStore = create<CanvasState>((set, get) => {
 
     collapseExpanded: () => set({ expanded: null }),
 
-    requestDelete: (id) => set({ pendingDeleteId: id }),
+    requestDelete: (id) => {
+      if (isClaudeMd(id)) return // CLAUDE.md is permanent
+      set({ pendingDeleteId: id })
+    },
 
     cancelDelete: () => set({ pendingDeleteId: null }),
 
@@ -925,6 +978,7 @@ export const useCanvasStore = create<CanvasState>((set, get) => {
     // Title editing settled — rename the note's file to match. Main may
     // adjust the title (sanitized, suffixed if taken); adopt what it used.
     commitNoteTitle: async (id) => {
+      if (isClaudeMd(id)) return // its filename is fixed; never rename
       const node = get().nodes.find((n) => n.id === id)
       if (!node || !isNote(node)) return
       const res = await window.api.note.rename(id, node.data.title)
@@ -957,6 +1011,9 @@ export const useCanvasStore = create<CanvasState>((set, get) => {
           void window.api.note.save(id, content)
         }, 600)
       )
+      // A pinned note's index blurb tracks its content (debounced inside).
+      const node = get().nodes.find((n) => n.id === id)
+      if (node && isNote(node) && node.data.pinned) get().scheduleDescribe(id)
     },
 
     setViewVersion: (id, index) => patchData(id, { viewVersion: index }),
@@ -976,7 +1033,57 @@ export const useCanvasStore = create<CanvasState>((set, get) => {
           updatedAt: Date.now()
         })
         persist()
+        get().scheduleDescribe(id)
       }
+    },
+
+    togglePin: (id) => {
+      if (isClaudeMd(id)) return // already always-in-context; not a memory pin
+      const node = get().nodes.find((n) => n.id === id)
+      if (!node || !isNote(node)) return
+      const pinned = !node.data.pinned
+      patchData(id, { pinned })
+      persist() // pin state + the regenerated MEMORY.md ride the canvas save
+      // First pin of a note that already has content but no blurb: describe it
+      // now so the index line isn't bare.
+      if (pinned && node.data.content.trim() && !node.data.description) {
+        get().scheduleDescribe(id)
+      }
+    },
+
+    scheduleDescribe: (id) => {
+      const existing = describeTimers.get(id)
+      if (existing) clearTimeout(existing)
+      describeTimers.set(
+        id,
+        setTimeout(() => {
+          describeTimers.delete(id)
+          const node = get().nodes.find((n) => n.id === id)
+          if (!node || !isNote(node) || !node.data.pinned) return
+          const content = node.data.content.trim()
+          if (!content) return
+          void window.api.note.describe(content).then((description) => {
+            if (!description) return
+            const cur = get().nodes.find((n) => n.id === id)
+            // The note may have been unpinned or deleted while Haiku ran.
+            if (cur && isNote(cur) && cur.data.pinned) {
+              patchData(id, { description })
+              persist()
+            }
+          })
+        }, 1500)
+      )
+    },
+
+    reloadExternalEdit: (id) => {
+      const node = get().nodes.find((n) => n.id === id)
+      if (!node || !isNote(node) || !node.data.externalEdit) return
+      patchData(id, {
+        content: node.data.externalEdit.content,
+        externalEdit: undefined,
+        updatedAt: Date.now()
+      })
+      persist()
     },
 
     toggleResearch: (id) => {
@@ -1222,6 +1329,7 @@ export const useCanvasStore = create<CanvasState>((set, get) => {
     },
 
     discardNode: (id) => {
+      if (isClaudeMd(id)) return // permanent — never discarded as a blank note
       const node = get().nodes.find((n) => n.id === id)
       set((s) => ({
         ...(s.expanded?.id === id ? { expanded: null } : {}),
@@ -1438,7 +1546,9 @@ export const useCanvasStore = create<CanvasState>((set, get) => {
     load: async () => {
       const doc = await window.api.canvas.load()
       if (!doc) {
-        set({ loaded: true })
+        // Brand-new folder, no canvas.json yet — still give it its CLAUDE.md.
+        set({ loaded: true, nodes: ensureClaudeMd([]) })
+        get().persistSoon()
         return null
       }
       // Heights saved on a bigger screen may not fit this one — clamp on the way in.
@@ -1447,7 +1557,8 @@ export const useCanvasStore = create<CanvasState>((set, get) => {
         loaded: true,
         viewport: doc.viewport,
         edges: doc.edges ?? [],
-        nodes: doc.nodes.map((p) => {
+        nodes: ensureClaudeMd(
+          doc.nodes.map((p) => {
           const frame = {
             id: p.id,
             width: p.width,
@@ -1501,6 +1612,9 @@ export const useCanvasStore = create<CanvasState>((set, get) => {
                 color: p.color,
                 content: p.content ?? '',
                 versions: p.noteVersions ?? [],
+                ...(p.pinned ? { pinned: true } : {}),
+                ...(p.description ? { description: p.description } : {}),
+                ...(p.system ? { system: p.system } : {}),
                 status: 'idle',
                 minimized: p.minimized ?? false,
                 savedHeight,
@@ -1529,6 +1643,7 @@ export const useCanvasStore = create<CanvasState>((set, get) => {
             ...frame
           }
         })
+        )
       })
       return doc.viewport
     }
@@ -1562,14 +1677,22 @@ function generateTitle(
   fallback: string,
   isNoteNode: boolean
 ): void {
-  void window.api.thread.title(source).then((title) => {
+  // Install the first answer we get and ignore the rest — the title turn might
+  // resolve, reject, or hang (a stranded Haiku query would otherwise leave the
+  // node on its "…" placeholder forever), so a timeout backs it with `fallback`.
+  let done = false
+  const install = (title: string | null): void => {
+    if (done) return
+    done = true
     const next = title || fallback
     if (!next) return
     const cur = useCanvasStore.getState().nodes.find((n) => n.id === nodeId)
     if (!cur || cur.data.title) return // user renamed it first — their title wins
     useCanvasStore.getState().setTitle(nodeId, next)
     if (isNoteNode) void useCanvasStore.getState().commitNoteTitle(nodeId)
-  })
+  }
+  window.api.thread.title(source).then(install, () => install(null))
+  setTimeout(() => install(null), 15000)
 }
 
 // Stream events from the main process (one Agent SDK query per turn, any number of
@@ -1663,6 +1786,25 @@ window.api.thread.onEvent((event) => {
         ? { content: event.content, ...(event.versions ? { versions: event.versions } : {}) }
         : {}
     )
+  } else if (event.type === 'note-external-edit') {
+    // A chat just edited this note's file. If the user has unsaved edits in it
+    // (a pending autosave), park the new content behind a "Reload" prompt
+    // instead of clobbering their work; otherwise adopt it and refresh history.
+    const store = useCanvasStore.getState()
+    const node = store.nodes.find((n) => n.id === event.nodeId)
+    if (!node || !isNote(node)) return
+    if (noteSaveTimers.has(event.nodeId) || node.data.status === 'streaming') {
+      patch(event.nodeId, () => ({ externalEdit: { content: event.content } }))
+    } else {
+      patch(event.nodeId, () => ({
+        content: event.content,
+        externalEdit: undefined,
+        updatedAt: Date.now(),
+        ...(event.versions ? { versions: event.versions } : {})
+      }))
+      store.persistSoon()
+      if (node.data.pinned) store.scheduleDescribe(event.nodeId)
+    }
   } else if (event.type === 'permission') {
     patch(event.nodeId, () => ({ pendingPermission: event.request }))
   } else if (event.type === 'permission-resolved') {
@@ -1744,6 +1886,14 @@ window.api.thread.onEvent((event) => {
     // updatedAt (and injectedImages) round-trip through canvas.json — make them durable.
     useCanvasStore.getState().persistSoon()
 
+    // An editing turn changed a pinned note — refresh its index description.
+    if (event.ok && event.note) {
+      const node = useCanvasStore.getState().nodes.find((n) => n.id === event.nodeId)
+      if (node && isNote(node) && node.data.pinned) {
+        useCanvasStore.getState().scheduleDescribe(event.nodeId)
+      }
+    }
+
     // A turn landed on a still-unnamed node: name it from a one-shot Haiku turn
     // in the background — a chat from its opening exchange, a note from its
     // content. Until that returns the node shows a "…" placeholder; a user
@@ -1767,6 +1917,24 @@ window.api.thread.onEvent((event) => {
             titleFromText(node.data.content),
             true
           )
+        }
+      }
+      // Output notes a chat writes via an output port receive their content
+      // through note-content events but never a turn-complete of their own —
+      // name them off the chat's completed turn so they don't strand on "…".
+      if (node && isChat(node)) {
+        const store = useCanvasStore.getState()
+        for (const edge of store.edges) {
+          if (edge.kind !== 'output' || edge.source !== event.nodeId) continue
+          const out = store.nodes.find((n) => n.id === edge.target)
+          if (out && isNote(out) && !out.data.title && out.data.content) {
+            generateTitle(
+              out.id,
+              out.data.content.slice(0, 3000),
+              titleFromText(out.data.content),
+              true
+            )
+          }
         }
       }
     }

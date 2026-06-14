@@ -93,6 +93,16 @@ export interface PersistedNode {
   // Hydrated from the note's .versions.json sidecar on load; never written
   // into canvas.json (history is large and saves alongside the .md instead).
   noteVersions?: NoteVersion[]
+  // Notes: pinned into the project memory index (MEMORY.md). Small metadata,
+  // so it rides canvas.json directly.
+  pinned?: boolean
+  // The one persistent CLAUDE.md node: a note whose file is the folder's
+  // CLAUDE.md (not a title-named file). Always present, never deleted, renamed,
+  // or pinned. The flag rides canvas.json so the node is recognized on reload.
+  system?: 'claudeMd'
+  // Notes: the 1-3 sentence index description (Haiku-generated, cached). Rides
+  // canvas.json so the index survives reloads without re-describing.
+  description?: string
   minimized?: boolean
   sessionId?: string
   forkOf?: ForkRef
@@ -310,6 +320,9 @@ export type ThreadEvent =
   // the note's own id (for an output write it's a different node than the chat
   // that's streaming). versions rides the final settle so history stays live.
   | { nodeId: string; type: 'note-content'; content: string; versions?: NoteVersion[] }
+  // A chat turn edited a note's file on disk (memory gardening). nodeId is the
+  // affected NOTE node; the renderer reloads it, guarding unsaved user edits.
+  | { nodeId: string; type: 'note-external-edit'; content: string; versions?: NoteVersion[] }
   | {
       nodeId: string
       type: 'done'

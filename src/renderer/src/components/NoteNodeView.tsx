@@ -6,7 +6,7 @@ import {
   ResizeControlVariant,
   type NodeProps
 } from '@xyflow/react'
-import { ChevronLeft, ChevronRight, Minus, Trash2 } from 'lucide-react'
+import { Bookmark, ChevronLeft, ChevronRight, FileCode2, Minus, Trash2 } from 'lucide-react'
 import { useCanvasStore, MAX_NODE_H, notePager, type NoteNode } from '../store/canvas'
 import { paletteFor } from '../lib/palette'
 import { usePanel } from '../lib/usePanel'
@@ -39,8 +39,12 @@ function NoteNodeView({ id, data, selected }: NodeProps<NoteNode>): React.JSX.El
   const toggleMinimize = useCanvasStore((s) => s.toggleMinimize)
   const clearFocusDraft = useCanvasStore((s) => s.clearFocusDraft)
   const setCtxConnectSource = useCanvasStore((s) => s.setCtxConnectSource)
+  const togglePin = useCanvasStore((s) => s.togglePin)
   const setViewVersion = useCanvasStore((s) => s.setViewVersion)
   const armed = useCanvasStore((s) => s.ctxConnectSource === id)
+  // While the transform composer is open, its tab covers the node's top; hide
+  // the top connector so its square doesn't poke out over the tab seam.
+  const transforming = useCanvasStore((s) => s.transforming === id)
   const explicitHeight = useCanvasStore((s) => s.nodes.find((n) => n.id === id)?.height)
   const { docked, mode, open, collapse } = usePanel(id)
 
@@ -55,6 +59,10 @@ function NoteNodeView({ id, data, selected }: NodeProps<NoteNode>): React.JSX.El
 
   const titleRef = useRef<HTMLInputElement>(null)
   const editorRef = useRef<NoteEditorHandle>(null)
+
+  // The persistent CLAUDE.md node: fixed name, no pin/rename/delete — but it
+  // still edits, transforms, and accepts an output edge like any note.
+  const isClaudeMd = data.system === 'claudeMd'
 
   const streaming = data.status === 'streaming'
   // Unnamed but already streaming or filled in: show a pulsing "…" until the
@@ -106,7 +114,6 @@ function NoteNodeView({ id, data, selected }: NodeProps<NoteNode>): React.JSX.El
       style={
         {
           maxHeight: explicitHeight ?? data.growthCap ?? MAX_NODE_H,
-          backgroundColor: PAPER, // paper fill, fully opaque
           '--np-bg': palette.bg,
           '--np-edge': palette.edge,
           '--np-chip': `${palette.edge}99`,
@@ -120,30 +127,43 @@ function NoteNodeView({ id, data, selected }: NodeProps<NoteNode>): React.JSX.El
       }`}
     >
       <TransformFrame id={id} />
+      {/* Opaque card fill. Sits above the transform wrapper's background (which
+          rides a deeper negative z) but below all card content, so the wrapper's
+          colored tab can never bleed through the card itself — only its
+          protruding rim above the node shows. As a child it paints above the
+          root's background layer, which a plain `backgroundColor` would not. */}
+      <div
+        aria-hidden
+        className="absolute inset-0 rounded-[14px]"
+        style={{ backgroundColor: PAPER, zIndex: -1 }}
+      />
       {/* hidden layout anchors (left/right) kept for any id-less edges */}
       <Handle type="target" position={Position.Left} isConnectable={false} style={HIDDEN_HANDLE} />
       <Handle type="source" position={Position.Right} isConnectable={false} style={HIDDEN_HANDLE} />
       {/* the input connector: a chat's bottom circle drops here to gain
           read+write access to this note. Receive-only — the arrow always
           starts at the chat. */}
-      <Handle
-        id={INPUT_HANDLE_ID}
-        type="target"
-        position={Position.Top}
-        isConnectable
-        isConnectableStart={false}
-        title="Drop a chat's circle here to let it write this note"
-        className="ctx-handle"
-        style={ctxHandleStyle(palette.accent, 'top', 'square')}
-      />
+      {!transforming && (
+        <Handle
+          id={INPUT_HANDLE_ID}
+          type="target"
+          position={Position.Top}
+          isConnectable
+          isConnectableStart={false}
+          title="Drop a chat's circle here to let it write this note"
+          className="ctx-handle"
+          style={ctxHandleStyle(palette.accent, 'top', 'square')}
+        />
+      )}
       {/* the context connector: drag this square onto a chat's circle — or
           tap it and the arrow follows the cursor until a click on a chat
           commits (ContextConnectOverlay) — to feed the note into that chat's
-          system prompt */}
+          system prompt. Output sits on the right so derivation reads
+          left-to-right (context still comes in from the top). */}
       <Handle
         id={CTX_HANDLE_ID}
         type="source"
-        position={Position.Bottom}
+        position={Position.Right}
         isConnectable
         isConnectableEnd={false}
         title="Drag — or tap, then click a chat — to attach this note as context"
@@ -154,7 +174,7 @@ function NoteNodeView({ id, data, selected }: NodeProps<NoteNode>): React.JSX.El
           setCtxConnectSource(armed ? null : id)
         }}
         className={`ctx-handle ${armed ? 'ctx-armed' : ''}`}
-        style={ctxHandleStyle(palette.accent, 'bottom', 'square')}
+        style={ctxHandleStyle(palette.accent, 'right', 'square')}
       />
 
       {!data.minimized && (
@@ -209,7 +229,12 @@ function NoteNodeView({ id, data, selected }: NodeProps<NoteNode>): React.JSX.El
           </button>
         )}
         <PanelChips mode={mode} open={open} />
-        {editingTitle && !data.minimized ? (
+        {isClaudeMd ? (
+          <span className="flex min-w-0 flex-1 items-center gap-1.5 truncate text-[23px] font-medium text-(--np-deep)">
+            <FileCode2 className="h-[22px] w-[22px] shrink-0 opacity-70" />
+            CLAUDE.md
+          </span>
+        ) : editingTitle && !data.minimized ? (
           <input
             ref={titleRef}
             value={data.title}
@@ -238,7 +263,7 @@ function NoteNodeView({ id, data, selected }: NodeProps<NoteNode>): React.JSX.El
                 }
               }
             }}
-            className="nodrag min-w-0 flex-1 cursor-text truncate bg-transparent text-[26px] font-medium text-(--np-deep) outline-none placeholder:text-(--np-deep) placeholder:opacity-50"
+            className="nodrag min-w-0 flex-1 cursor-text truncate bg-transparent text-[23px] font-medium text-(--np-deep) outline-none placeholder:text-(--np-deep) placeholder:opacity-50"
           />
         ) : (
           <span
@@ -246,7 +271,7 @@ function NoteNodeView({ id, data, selected }: NodeProps<NoteNode>): React.JSX.El
               if (!data.minimized) setEditingTitle(true)
             }}
             title={data.minimized ? undefined : 'Double-click to rename'}
-            className={`min-w-0 flex-1 truncate text-[26px] font-medium text-(--np-deep) ${data.title ? '' : 'opacity-50'} ${awaitingTitle ? 'animate-pulse tracking-widest' : ''}`}
+            className={`min-w-0 flex-1 truncate text-[23px] font-medium text-(--np-deep) ${data.title ? '' : 'opacity-50'} ${awaitingTitle ? 'animate-pulse tracking-widest' : ''}`}
           >
             {awaitingTitle ? '●●●' : data.title || 'Untitled note'}
           </span>
@@ -255,7 +280,23 @@ function NoteNodeView({ id, data, selected }: NodeProps<NoteNode>): React.JSX.El
           <span className="shrink-0 animate-pulse tracking-widest text-neutral-400">●●●</span>
         )}
         <div className="nodrag relative ml-auto flex shrink-0 items-center gap-1">
-          {!data.minimized && (
+          {!data.minimized && !isClaudeMd && (
+            <button
+              type="button"
+              onClick={() => togglePin(id)}
+              title={
+                data.pinned
+                  ? 'In project memory — every new chat sees this note'
+                  : 'Add to project memory'
+              }
+              className={CHIP_BUTTON}
+            >
+              <Bookmark
+                className={`h-[25px] w-[25px] ${data.pinned ? 'fill-(--np-deep)' : ''}`}
+              />
+            </button>
+          )}
+          {!data.minimized && !isClaudeMd && (
             <TitleEditSlot
               editing={editingTitle}
               duplicate={duplicate}
@@ -264,14 +305,16 @@ function NoteNodeView({ id, data, selected }: NodeProps<NoteNode>): React.JSX.El
             />
           )}
           {!data.minimized && <TransformButton id={id} />}
-          <button
-            type="button"
-            onClick={() => requestDelete(id)}
-            title="Delete this note"
-            className={CHIP_BUTTON}
-          >
-            <Trash2 className="h-[25px] w-[25px]" />
-          </button>
+          {!isClaudeMd && (
+            <button
+              type="button"
+              onClick={() => requestDelete(id)}
+              title="Delete this note"
+              className={CHIP_BUTTON}
+            >
+              <Trash2 className="h-[25px] w-[25px]" />
+            </button>
+          )}
         </div>
       </div>
 
@@ -287,7 +330,6 @@ function NoteNodeView({ id, data, selected }: NodeProps<NoteNode>): React.JSX.El
           (an AI turn has touched it), and never while it's collapsed/docked. */}
       {!data.minimized && !docked && total > 1 && (
         <div className="nodrag absolute top-full right-2 mt-1.5 flex items-center gap-0.5">
-
           <button
             type="button"
             onClick={() => goTo(position - 1)}

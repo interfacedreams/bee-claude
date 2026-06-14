@@ -42,15 +42,19 @@ body {
     transform 120ms ease,
     box-shadow 120ms ease;
 }
-/* A down chevron inside every connector — the canvas flows top-to-bottom, so
-   inputs and outputs alike point down (input drops into the node below it,
-   output sends down to the node it feeds). White on the palette-accent fill. */
+/* A chevron inside every connector. Inputs sit on top and point down (they
+   drop into the node below them); outputs sit on the right and point right (they
+   send into the node they feed). White on the palette-accent fill. */
 .ctx-handle.react-flow__handle::after {
   content: '';
   position: absolute;
   inset: 0;
   pointer-events: none;
   background: url("data:image/svg+xml,%3Csvg%20xmlns='http://www.w3.org/2000/svg'%20viewBox='0%200%2024%2024'%20fill='none'%20stroke='white'%20stroke-width='3'%20stroke-linecap='round'%20stroke-linejoin='round'%3E%3Cpath%20d='M6%209l6%206%206-6'/%3E%3C/svg%3E")
+    center / 13px no-repeat;
+}
+.ctx-handle.react-flow__handle-right::after {
+  background: url("data:image/svg+xml,%3Csvg%20xmlns='http://www.w3.org/2000/svg'%20viewBox='0%200%2024%2024'%20fill='none'%20stroke='white'%20stroke-width='3'%20stroke-linecap='round'%20stroke-linejoin='round'%3E%3Cpath%20d='M9%206l6%206-6%206'/%3E%3C/svg%3E")
     center / 13px no-repeat;
 }
 /* Swell on hover / while a connection is over it. The translate must match
@@ -69,6 +73,13 @@ body {
 .ctx-handle.react-flow__handle-bottom.valid,
 .ctx-handle.react-flow__handle-bottom.ctx-armed {
   transform: translate(-50%, 50%) scale(1.25);
+}
+.ctx-handle.react-flow__handle-right:hover,
+.ctx-handle.react-flow__handle-right.connectingfrom,
+.ctx-handle.react-flow__handle-right.connectingto,
+.ctx-handle.react-flow__handle-right.valid,
+.ctx-handle.react-flow__handle-right.ctx-armed {
+  transform: translate(50%, -50%) scale(1.25);
 }
 .ctx-handle.react-flow__handle.valid {
   box-shadow: 0 0 0 5px rgba(146, 105, 11, 0.25);
@@ -230,12 +241,9 @@ body {
   margin: 0;
   line-height: 26px;
 }
-/* Separate consecutive paragraphs by one blank ruled line (a full 26px grid
-   step, so every line stays flush on the rules). Headings are untouched, so a
-   heading and its body still sit on adjacent lines. */
-.note-prose p + p {
-  margin-top: 26px;
-}
+/* Consecutive paragraphs sit on adjacent ruled lines: pressing Enter moves to
+   the next line rather than skipping one. (Paragraph breaks still round-trip to
+   markdown as blank lines; this only removes the visual gap.) */
 .note-prose ul,
 .note-prose ol {
   padding-left: 1.5em;

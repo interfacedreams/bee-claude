@@ -21,11 +21,12 @@ import DeriveEdge from './DeriveEdge'
 import ContextConnectOverlay from './ContextConnectOverlay'
 import BeeIcon from './BeeIcon'
 import ActionsLegend from './ActionsLegend'
+import MemoryLegend from './MemoryLegend'
 import ModelSelector from './ModelSelector'
 import EffortSelector from './EffortSelector'
+import InfoButton from './InfoButton'
 import FolderChip from './FolderChip'
 import Sidebar from './Sidebar'
-import AuthKeyButton from './AuthKeyButton'
 import SettingsButton from './SettingsButton'
 import PlacementOverlay from './PlacementOverlay'
 import DeleteChatModal from './DeleteChatModal'
@@ -403,8 +404,8 @@ function CanvasInner(): React.JSX.Element {
           <div className="absolute bottom-4 left-4 z-10 flex items-end gap-2">
             {/* hidden (not unmounted) in split screen so Recent keeps its state */}
             <div className={split ? 'hidden' : 'contents'}>{folder?.current && <Sidebar />}</div>
-            <AuthKeyButton />
             <SettingsButton />
+            <InfoButton />
           </div>
         )}
 
@@ -414,8 +415,11 @@ function CanvasInner(): React.JSX.Element {
             the placement layer (z-10), so an armed spawn button can still be
             clicked to disarm — same as when the header sat over the canvas. */}
         {loaded && folder?.current && (
-          <div className={`absolute top-4 left-4 z-20 ${split ? 'hidden' : ''}`}>
+          <div
+            className={`absolute top-4 left-4 z-20 flex flex-col gap-2 ${split ? 'hidden' : ''}`}
+          >
             <ActionsLegend />
+            <MemoryLegend />
           </div>
         )}
         {/* Model + Folder pickers sit under the docked panel — hide in split screen */}

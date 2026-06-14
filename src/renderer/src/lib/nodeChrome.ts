@@ -36,11 +36,12 @@ export const INPUT_HANDLE_ID = 'ctx-in'
 // a 6px dot; hover/snap effects live in main.css under .ctx-handle.
 export const ctxHandleStyle = (
   accent: string,
-  side: 'top' | 'bottom' = 'top',
+  side: 'top' | 'bottom' | 'right' = 'top',
   shape: 'circle' | 'square' = 'circle'
 ): React.CSSProperties => ({
-  ...(side === 'top' ? { top: -15 } : { bottom: -15 }),
-  left: '50%',
+  // top/bottom ride the horizontal center; right rides the vertical center
+  ...(side === 'top' ? { top: -17 } : side === 'bottom' ? { bottom: -15 } : { right: -19 }),
+  ...(side === 'right' ? { top: '50%' } : { left: '50%' }),
   width: 24,
   height: 24,
   borderRadius: shape === 'circle' ? '50%' : 6,

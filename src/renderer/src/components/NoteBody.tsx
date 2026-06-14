@@ -1,7 +1,7 @@
 import { useRef, type Ref } from 'react'
 import Markdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
-import { History } from 'lucide-react'
+import { History, RefreshCw } from 'lucide-react'
 import { useCanvasStore, isNote, notePager } from '../store/canvas'
 import { paletteFor } from '../lib/palette'
 import { useForwardedWheel } from '../lib/useForwardedWheel'
@@ -32,6 +32,7 @@ export default function NoteBody({
   const discardNode = useCanvasStore((s) => s.discardNode)
   const respondPermission = useCanvasStore((s) => s.respondPermission)
   const restoreVersion = useCanvasStore((s) => s.restoreVersion)
+  const reloadExternalEdit = useCanvasStore((s) => s.reloadExternalEdit)
   const scrollRef = useRef<HTMLDivElement>(null)
 
   const data = node && isNote(node) ? node.data : undefined
@@ -53,6 +54,21 @@ export default function NoteBody({
 
   return (
     <div className="nodrag relative mx-1 my-1 flex min-h-0 flex-1 cursor-auto flex-col overflow-hidden">
+      {/* An agent edited this note while the user had unsaved changes — its new
+          content is parked here rather than clobbering the edits in progress. */}
+      {data.externalEdit && (
+        <div className="mt-1 mb-1 flex shrink-0 items-center gap-2 rounded-[10px] bg-(--np-bg) px-3 py-1.5 text-[12px] text-(--np-deep)">
+          <RefreshCw className="h-3.5 w-3.5 shrink-0" />
+          <span className="min-w-0 flex-1 truncate">An agent updated this note on disk.</span>
+          <button
+            type="button"
+            onClick={() => reloadExternalEdit(id)}
+            className="shrink-0 cursor-pointer rounded-md bg-(--np-accent) px-2 py-0.5 font-medium text-white transition-colors hover:opacity-85"
+          >
+            Reload
+          </button>
+        </div>
+      )}
       {viewed && (
         <div className="mt-1 mb-1 flex shrink-0 items-center gap-2 rounded-[10px] bg-black/5 px-3 py-1.5 text-[12px] text-neutral-600">
           <History className="h-3.5 w-3.5 shrink-0 text-(--np-deep)" />

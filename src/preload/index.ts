@@ -49,6 +49,11 @@ const api = {
       index: number
     ): Promise<{ content: string; versions: NoteVersion[] } | null> =>
       ipcRenderer.invoke('note:restore', nodeId, index),
+    // A 1-3 sentence index blurb for a note's content (Haiku one-shot).
+    describe: (content: string): Promise<string | null> =>
+      ipcRenderer.invoke('note:describe', content),
+    // The current generated MEMORY.md text (the project memory index), or ''.
+    readMemory: (): Promise<string> => ipcRenderer.invoke('note:readMemory'),
     delete: (nodeId: string): Promise<void> => ipcRenderer.invoke('note:delete', nodeId)
   },
   file: {
