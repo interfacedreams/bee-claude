@@ -24,20 +24,18 @@ function ToggleRow({
   onChange: (checked: boolean) => void
 }): React.JSX.Element {
   return (
-    <button
-      type="button"
-      role="switch"
-      aria-checked={checked}
-      onClick={() => onChange(!checked)}
-      className="flex w-full cursor-pointer items-center gap-3 rounded-[10px] px-2 py-2 text-left transition-colors hover:bg-[#F2EDD8]"
-    >
+    <div className="flex items-center gap-3 py-2">
       <div className="min-w-0 flex-1">
         <div className="text-[13px] font-medium text-neutral-800">{label}</div>
         <div className="text-[12px] text-neutral-500">{description}</div>
       </div>
-      <div
-        className={`relative h-5 w-9 shrink-0 rounded-full transition-colors ${
-          checked ? 'bg-[#C9A227]' : 'bg-neutral-300'
+      <button
+        type="button"
+        role="switch"
+        aria-checked={checked}
+        onClick={() => onChange(!checked)}
+        className={`relative h-5 w-9 shrink-0 cursor-pointer rounded-full transition-colors ${
+          checked ? 'bg-black' : 'bg-neutral-300'
         }`}
       >
         <div
@@ -45,16 +43,16 @@ function ToggleRow({
             checked ? 'translate-x-[18px]' : 'translate-x-0.5'
           }`}
         />
-      </div>
-    </button>
+      </button>
+    </div>
   )
 }
 
 type Tab = 'subscription' | 'permissions'
 
 const TABS: ModalTab[] = [
-  { id: 'subscription', label: 'Subscription', icon: KeyRound },
-  { id: 'permissions', label: 'Permissions', icon: Wrench }
+  { id: 'subscription', label: 'Credentials', icon: KeyRound },
+  { id: 'permissions', label: 'Tools', icon: Wrench }
 ]
 
 export default function SettingsButton(): React.JSX.Element {
@@ -80,7 +78,7 @@ export default function SettingsButton(): React.JSX.Element {
         type="button"
         onClick={() => setOpen(true)}
         title="Global settings"
-        className="flex h-9 w-9 shrink-0 cursor-pointer items-center justify-center rounded-[14px] border border-[#E2DAC0] bg-[#FFFDF6] text-[#92690B] shadow-lg transition-colors hover:bg-[#F2EDD8]"
+        className="flex h-9 w-9 shrink-0 cursor-pointer items-center justify-center rounded-[6px] border border-black bg-white text-black shadow-md transition-colors hover:bg-neutral-100"
       >
         <Settings className="h-4 w-4" fill={anyAuto ? 'currentColor' : 'none'} />
       </button>
@@ -94,19 +92,11 @@ export default function SettingsButton(): React.JSX.Element {
           onTab={(id) => setTab(id as Tab)}
           onClose={() => setOpen(false)}
         >
-          {tab === 'subscription' && (
-            <div>
-              <h3 className="mb-3 flex items-center gap-2 text-[14px] font-semibold text-[#92690B]">
-                <KeyRound className="h-4 w-4" />
-                Claude subscription
-              </h3>
-              <AuthSection />
-            </div>
-          )}
+          {tab === 'subscription' && <AuthSection />}
 
           {tab === 'permissions' && (
             <div>
-              <h3 className="mb-2 flex items-center gap-2 text-[14px] font-semibold text-[#92690B]">
+              <h3 className="mb-2 flex items-center gap-2 text-[14px] font-semibold text-black">
                 <Wrench className="h-4 w-4" />
                 Tool permissions
               </h3>

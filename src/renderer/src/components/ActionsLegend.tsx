@@ -10,8 +10,9 @@ const ACTIONS = [
   { kind: 'link', label: 'New Tab', keycap: 'T' }
 ] as const
 
-// Same paper as the Recent legend — the two corner panels read as one family.
-const PAPER = '#FFFDF6'
+// White paper — the corner panels share the black-and-white vocabulary of the
+// top-right selectors (model / effort / repo).
+const PAPER = '#FFFFFF'
 
 const KEYCAP =
   'flex h-5 min-w-5 items-center justify-center rounded-[4px] border border-neutral-300 bg-neutral-100 px-1 text-[11px] font-semibold text-black shadow-[0_1.5px_0_#d4d4d4]'
@@ -36,7 +37,7 @@ export default function ActionsLegend(): React.JSX.Element {
         type="button"
         onClick={() => setCollapsed(false)}
         title="Show actions"
-        className="flex cursor-pointer items-center gap-1.5 rounded-[14px] border border-[#E2DAC0] bg-[#FFFDF6] px-3.5 py-2 text-[12px] font-semibold text-[#92690B] shadow-lg transition-colors hover:bg-[#F2EDD8]"
+        className="flex cursor-pointer items-center gap-1.5 rounded-[14px] border border-black bg-white px-3.5 py-2 text-[12px] font-semibold text-black shadow-lg transition-colors hover:bg-neutral-100"
       >
         <Plus className="h-3.5 w-3.5" />
         Actions
@@ -46,16 +47,16 @@ export default function ActionsLegend(): React.JSX.Element {
 
   return (
     <aside
-      className="flex w-56 flex-col overflow-hidden rounded-[14px] border border-[#E2DAC0] shadow-lg"
+      className="flex w-56 flex-col overflow-hidden rounded-[14px] border border-black shadow-lg"
       style={{ backgroundColor: PAPER }}
     >
-      <div className="flex shrink-0 items-center justify-between border-b border-[#E2DAC0] py-1.5 pl-3.5 pr-1.5">
-        <h2 className="text-[12px] font-semibold text-[#92690B]">Actions</h2>
+      <div className="flex shrink-0 items-center justify-between border-b border-neutral-200 py-1.5 pl-3.5 pr-1.5">
+        <h2 className="text-[12px] font-semibold text-black">Actions</h2>
         <button
           type="button"
           onClick={() => setCollapsed(true)}
           title="Hide actions"
-          className="flex h-6 w-6 shrink-0 cursor-pointer items-center justify-center rounded-md bg-[#F2EDD8] text-[#92690B] transition-colors hover:bg-[#E2DAC0]"
+          className="flex h-6 w-6 shrink-0 cursor-pointer items-center justify-center rounded-md bg-neutral-100 text-black transition-colors hover:bg-neutral-200"
         >
           <Minus className="h-4 w-4" />
         </button>
@@ -72,7 +73,7 @@ export default function ActionsLegend(): React.JSX.Element {
               className={`flex w-full cursor-pointer items-center justify-between rounded-[7px] px-2.5 py-1.5 text-left text-[13px] font-medium transition-colors ${
                 armed
                   ? 'bg-black text-white hover:bg-neutral-800'
-                  : 'text-neutral-800 hover:bg-[#F2EDD8]'
+                  : 'text-neutral-800 hover:bg-neutral-100'
               }`}
             >
               <span>{label}</span>

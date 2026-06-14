@@ -524,34 +524,64 @@ function loadDotEnv(): void {
   }
 }
 
-// Claude subscription auth: a long-lived OAuth token from `claude setup-token`
-// stored in userData (encrypted when the OS keychain is available). The agent
-// SDK subprocess inherits our env, so choosing it means exporting
-// CLAUDE_CODE_OAUTH_TOKEN and removing ANTHROPIC_API_KEY — inside the CLI an
-// API key would otherwise take precedence over the subscription token.
+// Claude auth: credentials live in userData/auth.json (each secret encrypted
+// when the OS keychain is available). Two kinds, in precedence order:
+//   1. a subscription OAuth token from `claude setup-token`
+//   2. an Anthropic API key set in Settings
+// The agent SDK subprocess inherits our env, so choosing the subscription means
+// exporting CLAUDE_CODE_OAUTH_TOKEN and removing ANTHROPIC_API_KEY — inside the
+// CLI an API key would otherwise take precedence over the subscription token.
+// The .env/environment ANTHROPIC_API_KEY is still honored as a last-resort
+// fallback, but a key set in Settings is the preferred way to provide one.
 
 const authFile = (): string => join(app.getPath('userData'), 'auth.json')
 
-let envApiKey: string | undefined // the .env/environment key, kept so clearing the token restores it
+let envApiKey: string | undefined // the .env/environment key, kept as a fallback
 let oauthToken: string | null = null
+let userApiKey: string | null = null // API key set in Settings; beats .env, loses to subscription
 
-async function readStoredToken(): Promise<string | null> {
-  try {
-    const raw = JSON.parse(await fs.readFile(authFile(), 'utf8'))
-    if (typeof raw.encrypted === 'string' && safeStorage.isEncryptionAvailable()) {
-      return safeStorage.decryptString(Buffer.from(raw.encrypted, 'base64')) || null
+// A secret persists as { encrypted: base64 } when the keychain is available,
+// else { plain: string }. Older files stored the subscription token at the top
+// level as { encrypted } or { token }, so decodeSecret accepts those too.
+function decodeSecret(value: unknown): string | null {
+  if (typeof value === 'string') return value || null
+  if (value && typeof value === 'object') {
+    const enc = (value as { encrypted?: unknown }).encrypted
+    if (typeof enc === 'string' && safeStorage.isEncryptionAvailable()) {
+      return safeStorage.decryptString(Buffer.from(enc, 'base64')) || null
     }
-    if (typeof raw.token === 'string' && raw.token) return raw.token
-  } catch {
-    // missing or unreadable — treated as no token
+    const plain = (value as { plain?: unknown; token?: unknown }).plain ?? (value as { token?: unknown }).token
+    if (typeof plain === 'string' && plain) return plain
   }
   return null
 }
 
-async function writeStoredToken(token: string): Promise<void> {
-  const body = safeStorage.isEncryptionAvailable()
-    ? { encrypted: safeStorage.encryptString(token).toString('base64') }
-    : { token }
+function encodeSecret(secret: string): { encrypted: string } | { plain: string } {
+  return safeStorage.isEncryptionAvailable()
+    ? { encrypted: safeStorage.encryptString(secret).toString('base64') }
+    : { plain: secret }
+}
+
+async function readStoredAuth(): Promise<{ token: string | null; apiKey: string | null }> {
+  try {
+    const raw = JSON.parse(await fs.readFile(authFile(), 'utf8'))
+    // Back-compat: a top-level { encrypted } / { token } is the old subscription token.
+    const token = decodeSecret(raw.token) ?? decodeSecret(raw)
+    return { token, apiKey: decodeSecret(raw.apiKey) }
+  } catch {
+    // missing or unreadable — treated as no credentials
+    return { token: null, apiKey: null }
+  }
+}
+
+async function writeStoredAuth(): Promise<void> {
+  const body: Record<string, unknown> = {}
+  if (oauthToken) body.token = encodeSecret(oauthToken)
+  if (userApiKey) body.apiKey = encodeSecret(userApiKey)
+  if (Object.keys(body).length === 0) {
+    await fs.rm(authFile(), { force: true })
+    return
+  }
   await fs.writeFile(authFile(), JSON.stringify(body), { mode: 0o600 })
 }
 
@@ -559,17 +589,22 @@ function applyAuthEnv(): void {
   if (oauthToken) {
     process.env.CLAUDE_CODE_OAUTH_TOKEN = oauthToken
     delete process.env.ANTHROPIC_API_KEY
-  } else {
-    delete process.env.CLAUDE_CODE_OAUTH_TOKEN
-    if (envApiKey !== undefined) process.env.ANTHROPIC_API_KEY = envApiKey
+    return
   }
+  delete process.env.CLAUDE_CODE_OAUTH_TOKEN
+  const key = userApiKey ?? envApiKey
+  if (key) process.env.ANTHROPIC_API_KEY = key
+  else delete process.env.ANTHROPIC_API_KEY
 }
 
 function authStatus(): AuthStatus {
+  const apiKeySource = userApiKey ? 'settings' : envApiKey ? 'env' : null
   return {
-    method: oauthToken ? 'subscription' : envApiKey ? 'apiKey' : 'none',
+    method: oauthToken ? 'subscription' : apiKeySource ? 'apiKey' : 'none',
     tokenSuffix: oauthToken ? oauthToken.slice(-4) : null,
-    hasApiKey: envApiKey !== undefined
+    apiKeySuffix: userApiKey ? userApiKey.slice(-4) : null,
+    apiKeySource,
+    hasApiKey: apiKeySource !== null
   }
 }
 
@@ -584,14 +619,32 @@ function registerAuthIpc(): void {
       throw new Error('That does not look like a Claude token (expected sk-ant-…)')
     }
     oauthToken = trimmed
-    await writeStoredToken(trimmed)
+    await writeStoredAuth()
     applyAuthEnv()
     return authStatus()
   })
 
   ipcMain.handle('auth:clearToken', async (): Promise<AuthStatus> => {
     oauthToken = null
-    await fs.rm(authFile(), { force: true })
+    await writeStoredAuth()
+    applyAuthEnv()
+    return authStatus()
+  })
+
+  ipcMain.handle('auth:setApiKey', async (_event, key: string): Promise<AuthStatus> => {
+    const trimmed = String(key).trim()
+    if (!trimmed.startsWith('sk-ant-')) {
+      throw new Error('That does not look like an Anthropic API key (expected sk-ant-…)')
+    }
+    userApiKey = trimmed
+    await writeStoredAuth()
+    applyAuthEnv()
+    return authStatus()
+  })
+
+  ipcMain.handle('auth:clearApiKey', async (): Promise<AuthStatus> => {
+    userApiKey = null
+    await writeStoredAuth()
     applyAuthEnv()
     return authStatus()
   })
@@ -1749,9 +1802,12 @@ app.whenReady().then(async () => {
 
   loadDotEnv()
 
-  // Decide auth before any SDK call: stored subscription token beats .env key.
+  // Decide auth before any SDK call: subscription token beats Settings API key
+  // beats .env key.
   envApiKey = process.env.ANTHROPIC_API_KEY
-  oauthToken = await readStoredToken()
+  const storedAuth = await readStoredAuth()
+  oauthToken = storedAuth.token
+  userApiKey = storedAuth.apiKey
   applyAuthEnv()
 
   permissionSettings = await readPermissionSettings()

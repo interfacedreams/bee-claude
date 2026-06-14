@@ -51,39 +51,45 @@ export default function TabbedModal({
       onClick={onClose}
     >
       <div
-        className="flex h-[420px] w-[600px] flex-col overflow-hidden rounded-[14px] border border-[#E2DAC0] bg-[#FFFDF6] shadow-xl"
+        className="flex h-[420px] w-[600px] flex-col overflow-hidden rounded-[14px] border border-black bg-white shadow-xl"
         onClick={(e) => e.stopPropagation()}
       >
-        {/* Top bar: title + horizontal icon/label tabs + close */}
-        <div className="flex shrink-0 items-center gap-2 border-b border-[#E2DAC0] bg-[#FBF7E9] px-3 py-2">
-          <h2 className="mr-1 flex items-center gap-2 px-1.5 text-[13px] font-semibold text-[#92690B]">
-            <TitleIcon className="h-4 w-4" />
-            {title}
-          </h2>
-          {tabs.map((t) => {
-            const Icon = t.icon
-            const isActive = t.id === active
-            return (
-              <button
-                key={t.id}
-                type="button"
-                onClick={() => onTab(t.id)}
-                className={`flex cursor-pointer items-center gap-2 rounded-[10px] px-3 py-1.5 text-[13px] font-medium transition-colors ${
-                  isActive ? 'bg-[#F2EDD8] text-[#92690B]' : 'text-neutral-600 hover:bg-[#F2EDD8]/60'
-                }`}
-              >
-                <Icon className="h-4 w-4 shrink-0" />
-                {t.label}
-              </button>
-            )
-          })}
-          <button
-            type="button"
-            onClick={onClose}
-            className="ml-auto flex h-6 w-6 shrink-0 cursor-pointer items-center justify-center rounded-md text-[#92690B] transition-colors hover:bg-[#F2EDD8]"
-          >
-            <X className="h-4 w-4" />
-          </button>
+        {/* Header row — sized like a note window's header — then a tabs row */}
+        <div className="shrink-0">
+          <div className="flex shrink-0 items-center gap-2 border-b border-neutral-200 px-3 py-1.5">
+            <h2 className="flex min-w-0 flex-1 items-center gap-2 text-[23px] font-medium text-black">
+              <TitleIcon className="h-[25px] w-[25px] shrink-0" />
+              {title}
+            </h2>
+            <button
+              type="button"
+              onClick={onClose}
+              className="flex h-9 w-9 shrink-0 cursor-pointer items-center justify-center rounded-lg bg-neutral-100 text-black transition-colors hover:bg-neutral-200"
+            >
+              <X className="h-[25px] w-[25px]" />
+            </button>
+          </div>
+          <div className="flex items-center gap-1 px-3 py-2">
+            {tabs.map((t) => {
+              const Icon = t.icon
+              const isActive = t.id === active
+              return (
+                <button
+                  key={t.id}
+                  type="button"
+                  onClick={() => onTab(t.id)}
+                  className={`flex cursor-pointer items-center gap-2 rounded-[10px] px-3 py-1.5 text-[13px] font-medium transition-colors ${
+                    isActive
+                      ? 'bg-black text-white'
+                      : 'text-neutral-600 hover:bg-neutral-100'
+                  }`}
+                >
+                  <Icon className="h-4 w-4 shrink-0" />
+                  {t.label}
+                </button>
+              )
+            })}
+          </div>
         </div>
 
         {/* Content: the active tab's body */}

@@ -35,8 +35,8 @@ import BeeIcon from './BeeIcon'
  */
 
 const RADIUS = 14 // matches the card's rounded-[14px]
-const BAR = 50 // header height for the single-line input row (flow px)
-const TOGGLE_ROW = 58 // the target toggle strip above the input (note sources only)
+const INPUT_ROW = 50 // the textarea row beneath the header (flow px)
+const HEADER = 48 // header band — mirrors the node header below (px-3 py-1.5 + h-9 chip)
 const TUCK = 20 // how far the tab extends down behind the node's top
 // The armed node is also selected, so it wears its 2px focus ring — sit the
 // dashed frame just outside that ring (3px out) on the sides and bottom, so the
@@ -63,7 +63,7 @@ function TransformComposer({ id }: { id: string }): React.JSX.Element {
   // in THIS note (its own color); deriving picks a contrast color, the one the
   // new note will wear.
   const wrap = paletteFor(inPlace ? sourceColor : contrastColorId(sourceColor))
-  const bar = sourceIsNote ? BAR + TOGGLE_ROW : BAR
+  const bar = HEADER + INPUT_ROW
 
   // Pull the keyboard in once mounted (a fresh arm = a fresh mount).
   useEffect(() => {
@@ -79,8 +79,8 @@ function TransformComposer({ id }: { id: string }): React.JSX.Element {
   }
 
   // cancel — the same chip shape/size as the header chrome (h-9, translucent
-  // edge fill, accent on hover), in the wrapper palette. Lives in the toggle
-  // row for notes, the input row otherwise.
+  // edge fill, accent on hover), in the wrapper palette. Sits at the header's
+  // left, mirroring the node's minimize chip.
   const cancelBtn = (
     <button
       type="button"
@@ -101,7 +101,7 @@ function TransformComposer({ id }: { id: string }): React.JSX.Element {
 
   return (
     <>
-      {/* the header tab background — rises BAR px above the node and tucks TUCK
+      {/* the header tab background — rises `bar` px above the node and tucks TUCK
           px under its top. z -2 keeps it behind the card's opaque fill (z -1),
           so the card covers the tucked-under part, leaving only the command bar
           above. */}
@@ -120,9 +120,9 @@ function TransformComposer({ id }: { id: string }): React.JSX.Element {
           pointerEvents: 'none'
         }}
       />
-      {/* the command controls, laid over the tab. A note source gets a target
-          toggle strip stacked above the input row; other sources show the
-          input row alone. */}
+      {/* the command controls, laid over the tab: a header band that mirrors
+          the node's own header (same height, chip button, line underneath),
+          with the textarea row beneath it. */}
       <div
         className="nodrag nowheel"
         style={{
@@ -136,31 +136,22 @@ function TransformComposer({ id }: { id: string }): React.JSX.Element {
           flexDirection: 'column'
         }}
       >
-        {/* target toggle — only for notes. Reads as a centered sentence,
-            "Transform →" + a segmented toggle whose two segments (new note /
-            this note) are both always visible; the active one fills white. New
-            note derives a fresh note; this note rewrites this one in place (a
-            new version in its history). The wrapper color tracks the choice. */}
-        {sourceIsNote && (
-          <div
-            style={{
-              position: 'relative',
-              height: TOGGLE_ROW,
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'center',
-              gap: 10,
-              padding: '12px 8px 0',
-              fontSize: 19,
-              fontWeight: 500,
-              color: wrap.deep
-            }}
-          >
-            {/* cancel sits at the row's left; the sentence stays centered */}
-            <div style={{ position: 'absolute', left: 8, top: '50%', transform: 'translateY(-50%)' }}>
-              {cancelBtn}
-            </div>
-            <span style={{ opacity: 0.75 }}>Transform →</span>
+        {/* header band — same px-3 py-1.5 + h-9 chrome as the node header below,
+            with a line underneath. Cancel sits at the left like the node's
+            minimize chip; "Transform →" reads as the title. Note sources also
+            carry the target toggle (new note / this note): both segments stay
+            visible and the active one fills white — new note derives a fresh
+            note, this note rewrites this one in place (a new version in its
+            history). The wrapper color tracks the choice. */}
+        <div
+          className="flex items-center gap-2 px-3 py-1.5"
+          style={{ borderBottom: `1px solid ${wrap.edge}` }}
+        >
+          {cancelBtn}
+          <span style={{ fontSize: 23, fontWeight: 500, color: wrap.deep, opacity: 0.85 }}>
+            Transform →
+          </span>
+          {sourceIsNote && (
             <div
               style={{
                 display: 'inline-flex',
@@ -182,7 +173,7 @@ function TransformComposer({ id }: { id: string }): React.JSX.Element {
                     onClick={() => setInPlace(opt.val)}
                     className="nodrag cursor-pointer rounded-md px-3 py-1 transition-colors"
                     style={{
-                      fontSize: 19,
+                      fontSize: 15,
                       background: active ? '#FFFFFF' : 'transparent',
                       color: wrap.deep,
                       fontWeight: active ? 600 : 500,
@@ -194,21 +185,18 @@ function TransformComposer({ id }: { id: string }): React.JSX.Element {
                 )
               })}
             </div>
-          </div>
-        )}
-        {/* the input row: the white input box with the send bee. For notes the
-            cancel ✕ lives up in the toggle row, so the input spans full width. */}
+          )}
+        </div>
+        {/* the input row: the white box with the send bee, full width */}
         <div
           style={{
             flex: 1,
-            minHeight: BAR,
+            minHeight: INPUT_ROW,
             display: 'flex',
             alignItems: 'center',
-            gap: 8,
-            padding: '6px 8px'
+            padding: '8px 12px'
           }}
         >
-          {!sourceIsNote && cancelBtn}
           {/* the white input box — full width, with the send bee tucked inside it */}
           <div
             style={{

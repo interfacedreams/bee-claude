@@ -6,7 +6,7 @@ import {
   ResizeControlVariant,
   type NodeProps
 } from '@xyflow/react'
-import { Bookmark, ChevronLeft, ChevronRight, FileCode2, Minus, Trash2 } from 'lucide-react'
+import { Brain, ChevronLeft, ChevronRight, Minus, Trash2 } from 'lucide-react'
 import { useCanvasStore, MAX_NODE_H, notePager, type NoteNode } from '../store/canvas'
 import { paletteFor } from '../lib/palette'
 import { usePanel } from '../lib/usePanel'
@@ -63,6 +63,11 @@ function NoteNodeView({ id, data, selected }: NodeProps<NoteNode>): React.JSX.El
   // The persistent CLAUDE.md node: fixed name, no pin/rename/delete — but it
   // still edits, transforms, and accepts an output edge like any note.
   const isClaudeMd = data.system === 'claudeMd'
+
+  // "In project memory" — drives the brain treatment in the header and on the
+  // right output connector. A pinned note opts in (and can opt back out);
+  // CLAUDE.md is always in, in full, and can't be toggled off.
+  const inMemory = data.pinned || isClaudeMd
 
   const streaming = data.status === 'streaming'
   // Unnamed but already streaming or filled in: show a pulsing "…" until the
@@ -166,7 +171,13 @@ function NoteNodeView({ id, data, selected }: NodeProps<NoteNode>): React.JSX.El
         position={Position.Right}
         isConnectable
         isConnectableEnd={false}
-        title="Drag — or tap, then click a chat — to attach this note as context"
+        title={
+          isClaudeMd
+            ? 'Always in project memory — every chat sees CLAUDE.md in full. Drag to also wire it into a chat.'
+            : data.pinned
+              ? 'In memory — the agent pulls this in on demand. Drag to also wire its full text into a chat.'
+              : 'Drag — or tap, then click a chat — to attach this note as context'
+        }
         onClick={(e) => {
           // keep the tap from reaching the overlay's window listener,
           // which treats any stray click as cancel
@@ -174,8 +185,26 @@ function NoteNodeView({ id, data, selected }: NodeProps<NoteNode>): React.JSX.El
           setCtxConnectSource(armed ? null : id)
         }}
         className={`ctx-handle ${armed ? 'ctx-armed' : ''}`}
-        style={ctxHandleStyle(palette.accent, 'right', 'square')}
-      />
+        style={{
+          ...ctxHandleStyle(palette.accent, 'right', 'square'),
+          // In memory: a white brain rides inside the knob (mirrors the header
+          // toggle's active state). Slightly larger so the glyph stays legible,
+          // slightly faded so the knob reads as "optional — already in memory".
+          ...(inMemory
+            ? {
+                width: 28,
+                height: 28,
+                right: -22,
+                opacity: 0.85,
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center'
+              }
+            : {})
+        }}
+      >
+        {inMemory && <Brain className="pointer-events-none h-4 w-4 text-white" />}
+      </Handle>
 
       {!data.minimized && (
         <>
@@ -230,8 +259,7 @@ function NoteNodeView({ id, data, selected }: NodeProps<NoteNode>): React.JSX.El
         )}
         <PanelChips mode={mode} open={open} />
         {isClaudeMd ? (
-          <span className="flex min-w-0 flex-1 items-center gap-1.5 truncate text-[23px] font-medium text-(--np-deep)">
-            <FileCode2 className="h-[22px] w-[22px] shrink-0 opacity-70" />
+          <span className="min-w-0 flex-1 truncate text-[23px] font-medium text-(--np-deep)">
             CLAUDE.md
           </span>
         ) : editingTitle && !data.minimized ? (
@@ -289,12 +317,24 @@ function NoteNodeView({ id, data, selected }: NodeProps<NoteNode>): React.JSX.El
                   ? 'In project memory — every new chat sees this note'
                   : 'Add to project memory'
               }
-              className={CHIP_BUTTON}
+              className={`nodrag flex h-9 w-9 shrink-0 cursor-pointer items-center justify-center rounded-lg transition-colors ${
+                data.pinned
+                  ? 'bg-(--np-accent) text-white'
+                  : 'bg-(--np-chip) text-(--np-deep) hover:bg-(--np-accent)'
+              }`}
             >
-              <Bookmark
-                className={`h-[25px] w-[25px] ${data.pinned ? 'fill-(--np-deep)' : ''}`}
-              />
+              <Brain className="h-[25px] w-[25px]" />
             </button>
+          )}
+          {/* CLAUDE.md is always in memory, in full — the brain is shown filled
+              like a pinned note's, but it's a fixed indicator, not a toggle. */}
+          {!data.minimized && isClaudeMd && (
+            <div
+              title="Always in project memory — every chat sees CLAUDE.md in full"
+              className="flex h-9 w-9 shrink-0 cursor-default items-center justify-center rounded-lg bg-(--np-accent) text-white"
+            >
+              <Brain className="h-[25px] w-[25px]" />
+            </div>
           )}
           {!data.minimized && !isClaudeMd && (
             <TitleEditSlot

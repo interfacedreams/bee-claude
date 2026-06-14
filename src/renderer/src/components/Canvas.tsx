@@ -24,7 +24,6 @@ import ActionsLegend from './ActionsLegend'
 import MemoryLegend from './MemoryLegend'
 import ModelSelector from './ModelSelector'
 import EffortSelector from './EffortSelector'
-import InfoButton from './InfoButton'
 import FolderChip from './FolderChip'
 import Sidebar from './Sidebar'
 import SettingsButton from './SettingsButton'
@@ -405,7 +404,6 @@ function CanvasInner(): React.JSX.Element {
             {/* hidden (not unmounted) in split screen so Recent keeps its state */}
             <div className={split ? 'hidden' : 'contents'}>{folder?.current && <Sidebar />}</div>
             <SettingsButton />
-            <InfoButton />
           </div>
         )}
 

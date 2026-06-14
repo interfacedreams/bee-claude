@@ -18,7 +18,9 @@ const api = {
   auth: {
     status: (): Promise<AuthStatus> => ipcRenderer.invoke('auth:status'),
     setToken: (token: string): Promise<AuthStatus> => ipcRenderer.invoke('auth:setToken', token),
-    clearToken: (): Promise<AuthStatus> => ipcRenderer.invoke('auth:clearToken')
+    clearToken: (): Promise<AuthStatus> => ipcRenderer.invoke('auth:clearToken'),
+    setApiKey: (key: string): Promise<AuthStatus> => ipcRenderer.invoke('auth:setApiKey', key),
+    clearApiKey: (): Promise<AuthStatus> => ipcRenderer.invoke('auth:clearApiKey')
   },
   settings: {
     permissions: (): Promise<PermissionSettings> => ipcRenderer.invoke('settings:permissions:get'),

@@ -1,11 +1,13 @@
 import { useMemo, useState } from 'react'
 import { useReactFlow } from '@xyflow/react'
-import { Bookmark, FileCode2, Minus, Plus } from 'lucide-react'
+import { Brain, FileCode2, Info, Minus, Plus, X } from 'lucide-react'
 import { useCanvasStore, isNote, type CanvasNode } from '../store/canvas'
 import { paletteFor } from '../lib/palette'
+import Tooltip from './Tooltip'
 
-// Same paper as the other corner legends — one family.
-const PAPER = '#FFFDF6'
+// White paper — the corner legends share the black-and-white vocabulary of the
+// top-right selectors (model / effort / repo).
+const PAPER = '#FFFFFF'
 
 /**
  * "Memory" legend on the canvas's left edge: the durable context every new chat
@@ -15,7 +17,8 @@ const PAPER = '#FFFDF6'
  * Recent panel does). The app owns the index end to end — the user curates it
  * only by pinning and unpinning notes; the generated MEMORY.md itself is no
  * longer shown here (the pinned list above is the same information, legible),
- * and the Info popover explains how the index is built.
+ * and the Info button in the header opens a popover explaining how the index is
+ * built.
  *
  * Always present (CLAUDE.md alone is enough to populate it). Positioning is
  * owned by the top-left overlay container in Canvas, which stacks it under the
@@ -26,6 +29,7 @@ export default function MemoryLegend(): React.JSX.Element | null {
   const toggleMinimize = useCanvasStore((s) => s.toggleMinimize)
   const { fitView } = useReactFlow()
   const [collapsed, setCollapsed] = useState(false)
+  const [explain, setExplain] = useState(false)
 
   const pinned = useMemo(() => nodes.filter((n) => isNote(n) && n.data.pinned), [nodes])
   // The always-present CLAUDE.md node — surfaced here as a jump link so the
@@ -56,7 +60,7 @@ export default function MemoryLegend(): React.JSX.Element | null {
         type="button"
         onClick={() => setCollapsed(false)}
         title="Show project memory"
-        className="flex cursor-pointer items-center gap-1.5 rounded-[14px] border border-[#E2DAC0] bg-[#FFFDF6] px-3.5 py-2 text-[12px] font-semibold text-[#92690B] shadow-lg transition-colors hover:bg-[#F2EDD8]"
+        className="flex cursor-pointer items-center gap-1.5 rounded-[14px] border border-black bg-white px-3.5 py-2 text-[12px] font-semibold text-black shadow-lg transition-colors hover:bg-neutral-100"
       >
         <Plus className="h-3.5 w-3.5" />
         Memory
@@ -66,60 +70,135 @@ export default function MemoryLegend(): React.JSX.Element | null {
 
   return (
     <aside
-      className="flex max-h-[clamp(240px,40vh,520px)] w-56 flex-col overflow-hidden rounded-[14px] border border-[#E2DAC0] shadow-lg"
+      className="flex max-h-[clamp(240px,40vh,520px)] w-56 flex-col overflow-hidden rounded-[14px] border border-black shadow-lg"
       style={{ backgroundColor: PAPER }}
     >
-      <div className="flex shrink-0 items-center justify-between border-b border-[#E2DAC0] py-1.5 pl-3.5 pr-1.5">
-        <h2 className="text-[12px] font-semibold text-[#92690B]">Memory</h2>
-        <button
-          type="button"
-          onClick={() => setCollapsed(true)}
-          title="Hide project memory"
-          className="flex h-6 w-6 shrink-0 cursor-pointer items-center justify-center rounded-md bg-[#F2EDD8] text-[#92690B] transition-colors hover:bg-[#E2DAC0]"
-        >
-          <Minus className="h-4 w-4" />
-        </button>
+      <div className="flex shrink-0 items-center justify-between border-b border-neutral-200 py-1.5 pl-3.5 pr-1.5">
+        <h2 className="text-[12px] font-semibold text-black">Memory</h2>
+        <div className="flex shrink-0 items-center gap-1">
+          <Tooltip label="What is project memory?">
+            <button
+              type="button"
+              onClick={() => setExplain(true)}
+              className="flex h-6 w-6 shrink-0 cursor-pointer items-center justify-center rounded-md text-black transition-colors hover:bg-neutral-200"
+            >
+              <Info className="h-3.5 w-3.5" />
+            </button>
+          </Tooltip>
+          <button
+            type="button"
+            onClick={() => setCollapsed(true)}
+            title="Hide project memory"
+            className="flex h-6 w-6 shrink-0 cursor-pointer items-center justify-center rounded-md bg-neutral-100 text-black transition-colors hover:bg-neutral-200"
+          >
+            <Minus className="h-4 w-4" />
+          </button>
+        </div>
       </div>
-      <div className="min-h-0 overflow-y-auto p-1">
+      {explain && <MemoryExplainer onClose={() => setExplain(false)} />}
+      <div className="flex min-h-0 flex-col p-1">
         {/* CLAUDE.md — the project's instructions, every chat sees them. Click
-            to jump to its node on the canvas (same as a pinned note). */}
+            to jump to its node on the canvas (same as a pinned note). It stays
+            pinned above the scrolling note list. */}
         {claudeMd && (
           <button
             type="button"
             onClick={() => focusNode(claudeMd)}
             title="The project's CLAUDE.md — instructions every chat sees"
-            className="flex w-full cursor-pointer items-center gap-2 rounded-[7px] px-2.5 py-1.5 text-left transition-colors hover:bg-[#F2EDD8]"
+            className="flex w-full shrink-0 cursor-pointer items-center gap-2 rounded-[7px] px-2.5 py-1.5 text-left transition-colors hover:bg-neutral-100"
           >
-            <FileCode2 className="h-3.5 w-3.5 shrink-0 text-[#92690B]" />
-            <span className="min-w-0 flex-1 truncate text-[13px] font-medium text-[#92690B]">
+            <FileCode2 className="h-3.5 w-3.5 shrink-0 text-black" />
+            <span className="min-w-0 flex-1 truncate text-[13px] font-medium text-black">
               CLAUDE.md
             </span>
           </button>
         )}
 
-        {claudeMd && pinned.length > 0 && <div className="my-1 border-t border-[#EFE7CC]" />}
+        {claudeMd && pinned.length > 0 && (
+          <div className="my-1 shrink-0 border-t border-neutral-200" />
+        )}
 
-        {pinned.map((n) => (
-          <button
-            key={n.id}
-            type="button"
-            onClick={() => focusNode(n)}
-            title={n.data.title || 'Untitled note'}
-            className={`flex w-full cursor-pointer items-center gap-2 rounded-[7px] px-2.5 py-1.5 text-left transition-colors hover:bg-[#F2EDD8] ${
-              n.selected ? 'bg-[#F2EDD8]' : ''
-            }`}
-          >
-            <Bookmark
-              className="h-3 w-3 shrink-0"
-              style={{ color: paletteFor(n.data.color).accent }}
-              fill="currentColor"
-            />
-            <span className="min-w-0 flex-1 truncate text-[13px] text-neutral-800">
-              {n.data.title || <span className="text-neutral-400 italic">Untitled note</span>}
-            </span>
-          </button>
-        ))}
+        {/* Pinned notes — capped at ~5 rows tall, then scrolls. Each row is
+            ~32px (py-1.5 + 13px line), so 5 rows ≈ 160px. */}
+        <div className="min-h-0 max-h-[160px] overflow-y-auto">
+          {pinned.map((n) => (
+            <button
+              key={n.id}
+              type="button"
+              onClick={() => focusNode(n)}
+              title={n.data.title || 'Untitled note'}
+              className={`flex w-full cursor-pointer items-center gap-2 rounded-[7px] px-2.5 py-1.5 text-left transition-colors hover:bg-neutral-100 ${
+                n.selected ? 'bg-neutral-100' : ''
+              }`}
+            >
+              <Brain
+                className="h-3.5 w-3.5 shrink-0"
+                style={{ color: paletteFor(n.data.color).accent }}
+              />
+              <span className="min-w-0 flex-1 truncate text-[13px] text-neutral-800">
+                {n.data.title || <span className="text-neutral-400 italic">Untitled note</span>}
+              </span>
+            </button>
+          ))}
+        </div>
       </div>
     </aside>
+  )
+}
+
+/**
+ * Small popover explaining what project memory is and how the MEMORY.md index
+ * is built — opened from the ⓘ in the legend header. Read-only; purely
+ * explanatory. A centered overlay (not anchored) keeps it readable even when the
+ * legend sits in the corner.
+ */
+function MemoryExplainer({ onClose }: { onClose: () => void }): React.JSX.Element {
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/20 p-6"
+      onClick={onClose}
+    >
+      <div
+        className="w-[360px] max-w-full rounded-[14px] border border-black shadow-2xl"
+        style={{ backgroundColor: PAPER }}
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="flex items-center justify-between border-b border-neutral-200 py-2 pl-4 pr-2">
+          <h3 className="flex items-center gap-2 text-[14px] font-semibold text-black">
+            <Brain className="h-4 w-4" />
+            Memory
+          </h3>
+          <button
+            type="button"
+            onClick={onClose}
+            title="Close"
+            className="flex h-6 w-6 shrink-0 cursor-pointer items-center justify-center rounded-md text-black transition-colors hover:bg-neutral-200"
+          >
+            <X className="h-4 w-4" />
+          </button>
+        </div>
+        <div className="p-4">
+          <p className="text-[13px] leading-relaxed text-neutral-700">
+            Add a note to memory with the brain icon on its header. Remembered notes are listed in
+            a <code className="font-mono">MEMORY.md</code> index handed to every new chat — a table
+            of contents, not the full text. The agent always knows the notes exist and opens the
+            ones it needs on demand.
+          </p>
+          <pre className="mt-3 overflow-x-auto rounded-[6px] bg-[#F7F2DF] px-3 py-2.5 text-[11px] leading-snug text-neutral-700">
+            {`# Project memory
+
+- [Auth ideas](Auth ideas.md) — Token
+  refresh flow and open questions.
+- [Roadmap](Roadmap.md) — Q3 priorities.`}
+          </pre>
+          <p className="mt-3 text-[13px] leading-relaxed text-neutral-700">
+            Each line links the note&rsquo;s file with a one-line description (generated for you).
+            Remove a note from memory and it drops back out.{' '}
+            <code className="font-mono">CLAUDE.md</code> is different — it&rsquo;s always in context
+            in full, no marking needed.
+          </p>
+        </div>
+      </div>
+    </div>
   )
 }

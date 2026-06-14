@@ -8,9 +8,10 @@ import { paletteFor } from '../lib/palette'
 const byRecency = (a: CanvasNode, b: CanvasNode): number =>
   (b.data.updatedAt ?? 0) - (a.data.updatedAt ?? 0)
 
-// The nodes' paper color (NoteNodeView keeps its own copy) — worn opaque so
-// nodes sliding underneath never show through the list.
-const PAPER = '#FFFDF6'
+// White paper, worn opaque so nodes sliding underneath never show through the
+// list — the corner panels share the black-and-white vocabulary of the
+// top-right selectors (model / effort / repo).
+const PAPER = '#FFFFFF'
 
 /**
  * "Recent" panel floating over the canvas's bottom-left corner: one list of
@@ -60,7 +61,7 @@ export default function Sidebar(): React.JSX.Element | null {
         type="button"
         onClick={() => setCollapsed(false)}
         title="Show recent list"
-        className="flex cursor-pointer items-center gap-1.5 rounded-[14px] border border-[#E2DAC0] bg-[#FFFDF6] px-3.5 py-2 text-[12px] font-semibold text-[#92690B] shadow-lg transition-colors hover:bg-[#F2EDD8]"
+        className="flex cursor-pointer items-center gap-1.5 rounded-[14px] border border-black bg-white px-3.5 py-2 text-[12px] font-semibold text-black shadow-lg transition-colors hover:bg-neutral-100"
       >
         <Plus className="h-3.5 w-3.5" />
         Recent
@@ -70,16 +71,16 @@ export default function Sidebar(): React.JSX.Element | null {
 
   return (
     <aside
-      className="flex max-h-[clamp(240px,34vh,480px)] w-56 flex-col overflow-hidden rounded-[14px] border border-[#E2DAC0] shadow-lg"
+      className="flex max-h-[clamp(240px,34vh,480px)] w-56 flex-col overflow-hidden rounded-[14px] border border-black shadow-lg"
       style={{ backgroundColor: PAPER }}
     >
-      <div className="flex shrink-0 items-center justify-between border-b border-[#E2DAC0] py-1.5 pl-3.5 pr-1.5">
-        <h2 className="text-[12px] font-semibold text-[#92690B]">Recent</h2>
+      <div className="flex shrink-0 items-center justify-between border-b border-neutral-200 py-1.5 pl-3.5 pr-1.5">
+        <h2 className="text-[12px] font-semibold text-black">Recent</h2>
         <button
           type="button"
           onClick={() => setCollapsed(true)}
           title="Hide recent list"
-          className="flex h-6 w-6 shrink-0 cursor-pointer items-center justify-center rounded-md bg-[#F2EDD8] text-[#92690B] transition-colors hover:bg-[#E2DAC0]"
+          className="flex h-6 w-6 shrink-0 cursor-pointer items-center justify-center rounded-md bg-neutral-100 text-black transition-colors hover:bg-neutral-200"
         >
           <Minus className="h-4 w-4" />
         </button>
@@ -94,8 +95,8 @@ export default function Sidebar(): React.JSX.Element | null {
               type="button"
               onClick={() => focusNode(n)}
               title={n.data.title || untitled}
-              className={`flex w-full cursor-pointer items-center gap-2 rounded-[7px] px-2.5 py-1.5 text-left transition-colors hover:bg-[#F2EDD8] ${
-                n.selected ? 'bg-[#F2EDD8]' : ''
+              className={`flex w-full cursor-pointer items-center gap-2 rounded-[7px] px-2.5 py-1.5 text-left transition-colors hover:bg-neutral-100 ${
+                n.selected ? 'bg-neutral-100' : ''
               }`}
             >
               <span

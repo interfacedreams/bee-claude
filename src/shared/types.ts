@@ -20,11 +20,13 @@ export interface FolderState {
 export const BROWSE_PARTITION = 'persist:browse'
 
 // How the agent SDK subprocess will authenticate. A stored Claude
-// subscription OAuth token (from `claude setup-token`) wins over the
-// ANTHROPIC_API_KEY that .env provides.
+// subscription OAuth token (from `claude setup-token`) wins over an API key,
+// and an API key set in Settings wins over the ANTHROPIC_API_KEY from .env.
 export interface AuthStatus {
   method: 'subscription' | 'apiKey' | 'none'
   tokenSuffix: string | null // last characters of the stored token, for display
+  apiKeySuffix: string | null // last characters of the Settings-stored API key, for display
+  apiKeySource: 'settings' | 'env' | null // where the active/fallback API key comes from
   hasApiKey: boolean // an API key exists as fallback if the token is removed
 }
 
