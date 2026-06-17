@@ -1,7 +1,7 @@
-import { useState } from 'react'
 import { Minus, Plus } from 'lucide-react'
 import { useCanvasStore } from '../store/canvas'
 import { useSpawn } from '../lib/useSpawn'
+import { usePersistedCollapse } from '../lib/usePersistedCollapse'
 
 const ACTIONS = [
   { kind: 'chat', label: 'New Chat', keycap: 'C' },
@@ -29,7 +29,7 @@ const KEYCAP =
 export default function ActionsLegend(): React.JSX.Element {
   const placing = useCanvasStore((s) => s.placing)
   const spawn = useSpawn()
-  const [collapsed, setCollapsed] = useState(false)
+  const [collapsed, setCollapsed] = usePersistedCollapse('actions')
 
   if (collapsed) {
     return (

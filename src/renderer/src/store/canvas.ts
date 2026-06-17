@@ -379,6 +379,11 @@ interface CanvasState {
   // placement click on the canvas (armed by the toolbar buttons / C / N / F / L).
   placing: 'chat' | 'note' | 'file' | 'link' | null
   setPlacing: (kind: 'chat' | 'note' | 'file' | 'link' | null) => void
+  // Runtime-only: a chat placement armed by C while reading a file/link in the
+  // half-sheet carries the resource id here, so the ghost shows a dimmed pending
+  // context edge and dropping it wires resource → chat. Cleared with placing.
+  placingContextSource: string | null
+  armContextChat: (sourceId: string) => void
   // Runtime-only: the picked image riding the file-placement ghost.
   pendingFile: PendingFile | null
   // Open the image picker; on a pick, arm file placement with the image ghost.
@@ -417,11 +422,6 @@ interface CanvasState {
   init: () => Promise<Viewport | null>
   chooseFolder: () => Promise<Viewport | null>
   selectFolder: (path: string) => Promise<Viewport | null>
-  // Navigate within the open repo via the FOLDERS legend / breadcrumb: a
-  // subfolder name to descend, or null to climb back to the root.
-  enterFolder: (sub: string | null) => Promise<Viewport | null>
-  // Make a new named subfolder under the repo root (without leaving the canvas).
-  createFolder: (name: string) => Promise<void>
   onNodesChange: (changes: NodeChange<CanvasNode>[]) => void
   setViewport: (vp: Viewport) => void
   addNodeAt: (position: { x: number; y: number }) => ChatNode
@@ -476,6 +476,9 @@ interface CanvasState {
   // (note/file/link → chat only).
   addContextEdge: (sourceId: string, chatId: string) => void
   removeContextEdge: (edgeId: string) => void
+  // Spawn a chat wired to read a file/link, placed right of its card. Returns
+  // the new chat's id, or null if the source isn't a connectable resource.
+  chatAbout: (sourceId: string) => string | null
   // Wire a chat → note so the chat can read AND write that note.
   addOutputEdge: (chatId: string, noteId: string) => void
   discardNode: (id: string) => void
@@ -788,15 +791,35 @@ export const useCanvasStore = create<CanvasState>((set, get) => {
     anchorOffsets: {},
     pendingDeleteId: null,
     placing: null,
+    placingContextSource: null,
     pendingFile: null,
     ctxConnectSource: null,
     transforming: null,
     expanded: null,
     panelTabs: [],
 
-    // The pending image lives and dies with file-placement mode.
+    // The pending image lives and dies with file-placement mode. Any re-arm or
+    // cancel also drops a pending context source — it only rides a C-armed chat.
     setPlacing: (kind) =>
-      set(kind === 'file' ? { placing: kind } : { placing: kind, pendingFile: null }),
+      set(
+        kind === 'file'
+          ? { placing: kind, placingContextSource: null }
+          : { placing: kind, pendingFile: null, placingContextSource: null }
+      ),
+
+    // C while reading a file/link in the half-sheet: arm a chat ghost that
+    // carries a dimmed pending context edge from the resource. Re-pressing C on
+    // the same source disarms (toggle), matching the toolbar buttons.
+    armContextChat: (sourceId) => {
+      const s = get()
+      const src = s.nodes.find((n) => n.id === sourceId)
+      if (!src || !(isFile(src) || isLink(src))) return
+      if (s.placing === 'chat' && s.placingContextSource === sourceId) {
+        set({ placing: null, placingContextSource: null })
+        return
+      }
+      set({ placing: 'chat', pendingFile: null, placingContextSource: sourceId })
+    },
 
     startFilePlacement: async () => {
       const picked = await window.api.file.choose()
@@ -914,20 +937,6 @@ export const useCanvasStore = create<CanvasState>((set, get) => {
       if (path === get().folder?.current || anyStreaming()) return null
       await flushSave()
       return switchFolder(await window.api.folder.select(path))
-    },
-
-    enterFolder: async (sub) => {
-      if (anyStreaming()) return null
-      await flushSave()
-      return switchFolder(await window.api.folder.enter(sub))
-    },
-
-    createFolder: async (name) => {
-      const trimmed = name.trim()
-      if (!trimmed) return
-      // Creating a folder doesn't swap the canvas — just refresh the folder
-      // state so the new subfolder shows up in the legend.
-      set({ folder: await window.api.folder.create(trimmed) })
     },
 
     persistSoon: persist,
@@ -1396,6 +1405,20 @@ export const useCanvasStore = create<CanvasState>((set, get) => {
     removeContextEdge: (edgeId) => {
       set((s) => ({ edges: s.edges.filter((e) => e.id !== edgeId) }))
       persist()
+    },
+
+    chatAbout: (sourceId) => {
+      // "Chat about this" from the half-sheet: spawn a fresh chat just right of
+      // the resource's canvas card and wire it as context (resource → chat), so
+      // the reading panel stays put on the doc while the new chat opens with its
+      // composer focused on the live canvas beside it. Files and links only —
+      // notes/chats don't read as a thing you "ask about" from the panel.
+      const src = get().nodes.find((n) => n.id === sourceId)
+      if (!src || !(isFile(src) || isLink(src))) return null
+      const p = boxOf(src)
+      const chat = spawnNode({ x: p.x + p.w + DERIVE_GAP, y: p.y })
+      get().addContextEdge(sourceId, chat.id)
+      return chat.id
     },
 
     addOutputEdge: (chatId, noteId) => {

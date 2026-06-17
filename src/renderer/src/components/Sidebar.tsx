@@ -1,8 +1,9 @@
-import { useMemo, useState } from 'react'
+import { useMemo } from 'react'
 import { useReactFlow } from '@xyflow/react'
 import { File, Link, Minus, Plus } from 'lucide-react'
 import { useCanvasStore, isChat, isNote, isFile, isLink, type CanvasNode } from '../store/canvas'
 import { paletteFor } from '../lib/palette'
+import { usePersistedCollapse } from '../lib/usePersistedCollapse'
 
 // Most-recently-updated first; nodes that predate updatedAt sink to the bottom.
 const byRecency = (a: CanvasNode, b: CanvasNode): number =>
@@ -14,8 +15,7 @@ const byRecency = (a: CanvasNode, b: CanvasNode): number =>
 const PAPER = '#FFFFFF'
 
 /**
- * "Recent" panel at the foot of the top-left navigation column (under the repo
- * breadcrumb and the Folders legend): one list of
+ * "Recent" panel floating over the canvas's bottom-left corner: one list of
  * every resource — chats, notes, files (PDFs/images) and links — most recently
  * updated first. Kind is coded by the row marker: a circle for chats and a
  * square for notes (the shapes their canvas connector handles wear), a link
@@ -24,13 +24,14 @@ const PAPER = '#FFFFFF'
  * Height hugs the content up to roughly a third of the screen, then scrolls.
  * The header's minus chip (a small cousin of the node windows' minimize chip)
  * collapses the whole panel down to a "+ Recent" pill; clicking it reopens.
- * Positioning is owned by the top-left navigation column in Canvas.
+ * Positioning is owned by the bottom-left overlay container in Canvas, which
+ * seats this panel beside the auth key button.
  */
 export default function Sidebar(): React.JSX.Element | null {
   const nodes = useCanvasStore((s) => s.nodes)
   const toggleMinimize = useCanvasStore((s) => s.toggleMinimize)
   const { fitView } = useReactFlow()
-  const [collapsed, setCollapsed] = useState(false)
+  const [collapsed, setCollapsed] = usePersistedCollapse('recent')
 
   // Every resource shares the list — chats, notes, files and links; only the
   // ephemeral researcher transcripts stay off it.
@@ -66,7 +67,7 @@ export default function Sidebar(): React.JSX.Element | null {
         type="button"
         onClick={() => setCollapsed(false)}
         title="Show recent list"
-        className="flex w-[calc(50%-4px)] shrink-0 cursor-pointer items-center justify-start gap-1.5 overflow-hidden rounded-[14px] border border-black bg-white px-3.5 py-2 text-[12px] font-semibold text-black shadow-lg transition-colors hover:bg-neutral-100"
+        className="flex cursor-pointer items-center gap-1.5 rounded-[14px] border border-black bg-white px-3.5 py-2 text-[12px] font-semibold text-black shadow-lg transition-colors hover:bg-neutral-100"
       >
         <Plus className="h-3.5 w-3.5" />
         Recent
@@ -76,7 +77,7 @@ export default function Sidebar(): React.JSX.Element | null {
 
   return (
     <aside
-      className="flex max-h-[clamp(240px,34vh,480px)] w-full flex-col overflow-hidden rounded-[14px] border border-black shadow-lg"
+      className="flex max-h-[clamp(240px,34vh,480px)] w-56 flex-col overflow-hidden rounded-[14px] border border-black shadow-lg"
       style={{ backgroundColor: PAPER }}
     >
       <div className="flex shrink-0 items-center justify-between border-b border-neutral-200 py-1.5 pl-3.5 pr-1.5">

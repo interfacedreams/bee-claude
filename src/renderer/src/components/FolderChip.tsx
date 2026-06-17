@@ -1,21 +1,18 @@
 import { useState } from 'react'
 import { useReactFlow, type Viewport } from '@xyflow/react'
-import { ChevronDown, ChevronRight, Folder } from 'lucide-react'
+import { ChevronDown, Folder } from 'lucide-react'
 import { useCanvasStore } from '../store/canvas'
 
 /**
- * The repo chip at the top of the left column. At the root it's just the folder
- * name with a dropdown of recent folders — any folder you've worked in is one
- * click away. Once you've descended into a subfolder (via the Folders legend) it
- * grows a breadcrumb, "repo › subfolder", whose first crumb climbs back to the
- * root. Switching the whole repo swaps the canvas, so it's blocked while a reply
- * streams.
+ * Current-folder chip (lives in the top bar) with a dropdown of recent
+ * folders — any folder you've chatted in is one click away. Switching
+ * folders swaps the whole canvas, so it's blocked while a reply is
+ * streaming.
  */
 export default function FolderChip(): React.JSX.Element | null {
   const folder = useCanvasStore((s) => s.folder)
   const chooseFolder = useCanvasStore((s) => s.chooseFolder)
   const selectFolder = useCanvasStore((s) => s.selectFolder)
-  const enterFolder = useCanvasStore((s) => s.enterFolder)
   const anyStreaming = useCanvasStore((s) => s.nodes.some((n) => n.data.status === 'streaming'))
   const [open, setOpen] = useState(false)
   const { setViewport } = useReactFlow()
@@ -33,68 +30,26 @@ export default function FolderChip(): React.JSX.Element | null {
     setOpen(false)
     apply(await selectFolder(path))
   }
-  const handleUp = async (): Promise<void> => {
-    setOpen(false)
-    apply(await enterFolder(null))
-  }
 
-  // The breadcrumb home — the repo root. Falls back to the current folder when
-  // `root` is absent (e.g. a main process that predates folder navigation).
-  const home = folder.root ?? folder.current
-  const rootName = home ? (home.split('/').pop() ?? home) : 'Open folder…'
-  // We're inside a subfolder when the canvas root sits below the repo root.
-  const subName =
-    folder.current && folder.root && folder.current !== folder.root
-      ? (folder.current.split('/').pop() ?? null)
-      : null
+  const name = folder.current ? (folder.current.split('/').pop() ?? folder.current) : 'Open folder…'
 
-  // No folder open yet — a single button that launches the picker.
-  if (!folder.current) {
-    return (
+  return (
+    <div className="relative">
       <button
         type="button"
-        onClick={() => void handleChoose()}
+        onClick={() => (folder.current ? setOpen((o) => !o) : void handleChoose())}
+        title={folder.current ?? 'Choose a folder'}
         className="flex max-w-[280px] cursor-pointer items-center gap-2 rounded-[6px] border border-black bg-black px-3 py-1.5 text-[13px] font-medium text-white shadow-md transition-colors hover:bg-neutral-800"
       >
         <Folder className="h-3.5 w-3.5 shrink-0" />
-        <span className="truncate">{rootName}</span>
+        <span className="truncate">{name}</span>
+        {folder.current && <ChevronDown className="h-3 w-3 shrink-0" />}
       </button>
-    )
-  }
-
-  return (
-    <div className="relative w-fit">
-      <div className="flex max-w-[320px] items-center gap-1 rounded-[6px] border border-black bg-black px-2.5 py-1.5 text-[13px] font-medium text-white shadow-md">
-        <Folder className="h-3.5 w-3.5 shrink-0" />
-        {/* Root crumb: climbs back up when we're inside a subfolder. */}
-        <button
-          type="button"
-          onClick={() => (subName ? void handleUp() : setOpen((o) => !o))}
-          title={subName ? `Back to ${rootName}` : (home ?? '')}
-          className={`min-w-0 truncate ${subName ? 'cursor-pointer text-white/70 hover:text-white' : 'cursor-pointer'}`}
-        >
-          {rootName}
-        </button>
-        {subName && (
-          <>
-            <ChevronRight className="h-3 w-3 shrink-0 text-white/50" />
-            <span className="min-w-0 truncate">{subName}</span>
-          </>
-        )}
-        <button
-          type="button"
-          onClick={() => setOpen((o) => !o)}
-          title="Switch folder"
-          className="ml-0.5 flex shrink-0 cursor-pointer items-center text-white/70 hover:text-white"
-        >
-          <ChevronDown className="h-3.5 w-3.5" />
-        </button>
-      </div>
 
       {open && (
         <>
           <div className="fixed inset-0" onClick={() => setOpen(false)} />
-          <div className="absolute top-full left-0 mt-2 w-80 overflow-hidden rounded-[6px] border border-black bg-white shadow-xl">
+          <div className="absolute top-full right-0 mt-2 w-80 overflow-hidden rounded-[6px] border border-black bg-white shadow-xl">
             {anyStreaming && (
               <div className="border-b border-neutral-200 bg-neutral-50 px-3 py-2 text-[12px] text-neutral-500">
                 Wait for replies to finish before switching folders.

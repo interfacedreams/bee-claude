@@ -9,20 +9,8 @@ export interface FolderInfo {
 }
 
 export interface FolderState {
-  // The folder the canvas is rooted at right now — the top-level repo, or one
-  // of its subfolders when you've navigated in.
   current: string | null
-  // The top-level repo opened from the picker — the breadcrumb's home. Equal to
-  // `current` until you descend into a subfolder; navigation is one level deep,
-  // so `current` is always `root` or one of `subfolders`.
-  root: string | null
-  // Immediate subdirectory names of `root` (hidden/dotfolders excluded), shown
-  // in the FOLDERS legend.
-  subfolders: string[]
-  // Folders you've actually touched (created/edited a note, chat, file or tab),
-  // most recently touched first — plus the current one. Mere navigation never
-  // adds a folder here.
-  recents: FolderInfo[]
+  recents: FolderInfo[] // folders with at least one chat (plus the current one), most recent first
 }
 
 // The tab nodes' shared session partition: its own persistent cookie jar,

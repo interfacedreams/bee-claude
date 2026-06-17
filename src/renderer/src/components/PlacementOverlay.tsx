@@ -58,12 +58,19 @@ function ArmedOverlay({
   const addNoteAt = useCanvasStore((s) => s.addNoteAt)
   const addFileAt = useCanvasStore((s) => s.addFileAt)
   const addLinkAt = useCanvasStore((s) => s.addLinkAt)
+  const addContextEdge = useCanvasStore((s) => s.addContextEdge)
+  // A C-armed chat trails a pending context edge from this resource — drawn
+  // dimmed while placing, committed when the chat lands.
+  const ctxSource = useCanvasStore((s) => {
+    const id = s.placingContextSource
+    return id ? (s.nodes.find((n) => n.id === id) ?? null) : null
+  })
   // The ghost previews the color the node will actually get (palette cycle).
   const color = useCanvasStore((s) => nextColorId(s.nodes[s.nodes.length - 1]?.data.color))
   const { screenToFlowPosition, setCenter } = useReactFlow()
   // Live subscription (not getViewport): forwarded pans/zooms must re-render
   // the ghost so it tracks the canvas without waiting for a mousemove.
-  const { zoom } = useViewport()
+  const { x: vpX, y: vpY, zoom } = useViewport()
   const ref = useRef<HTMLDivElement>(null)
   // Cursor position relative to the overlay (null until it first moves here).
   const [cursor, setCursor] = useState<{ x: number; y: number } | null>(null)
@@ -91,6 +98,8 @@ function ArmedOverlay({
           : placing === 'note'
             ? addNoteAt(position)
             : addNodeAt(position)
+    // Commit the pending context edge before setPlacing clears the source.
+    if (node && ctxSource && placing === 'chat') addContextEdge(ctxSource.id, node.id)
     setPlacing(null)
     if (!node) return
     // Center on the newborn node at a readable zoom — come in to 100% when
@@ -143,6 +152,33 @@ function ArmedOverlay({
         setPlacing(null)
       }}
     >
+      {cursor && ctxSource && (
+        // The pending context edge: from the resource's right edge to the
+        // ghost's left side, drawn dimmer and dashed so it reads as not-yet-
+        // committed. Coords are overlay-relative (= flow * zoom + viewport),
+        // matching the ghost. Behind the ghost in DOM order so it tucks under.
+        (() => {
+          const sw = ctxSource.width ?? ctxSource.measured?.width ?? NODE_W
+          const sh = ctxSource.height ?? ctxSource.measured?.height ?? 360
+          const ax = vpX + (ctxSource.position.x + sw) * zoom
+          const ay = vpY + (ctxSource.position.y + sh / 2) * zoom
+          const tx = cursor.x - (ghostW / 2) * zoom
+          const ty = cursor.y
+          const c = Math.max(40, Math.abs(tx - ax) * 0.4)
+          return (
+            <svg className="pointer-events-none absolute inset-0 h-full w-full overflow-visible">
+              <path
+                d={`M ${ax} ${ay} C ${ax + c} ${ay}, ${tx - c} ${ty}, ${tx} ${ty}`}
+                fill="none"
+                stroke={paletteFor(ctxSource.data.color).accent}
+                strokeWidth={2}
+                strokeDasharray="6 5"
+                opacity={0.4}
+              />
+            </svg>
+          )
+        })()
+      )}
       {cursor && (
         <>
           <div

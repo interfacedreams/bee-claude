@@ -25,7 +25,6 @@ import MemoryLegend from './MemoryLegend'
 import ModelSelector from './ModelSelector'
 import EffortSelector from './EffortSelector'
 import FolderChip from './FolderChip'
-import FoldersLegend from './FoldersLegend'
 import Sidebar from './Sidebar'
 import SettingsButton from './SettingsButton'
 import PlacementOverlay from './PlacementOverlay'
@@ -139,6 +138,21 @@ function CanvasInner(): React.JSX.Element {
       const key = e.key.toLowerCase()
       if (key === 'c' || key === 'n' || key === 'f' || key === 't') {
         e.preventDefault()
+        // Reading a file/link in the half-sheet, C means "chat about this":
+        // arm a chat ghost that already trails a dimmed context edge from the
+        // open resource — you still click to place it, and dropping wires the
+        // edge. Full screen is single-doc reading, so it keeps the plain spawn.
+        if (key === 'c') {
+          const s = useCanvasStore.getState()
+          const open =
+            s.expanded?.mode === 'panel'
+              ? s.nodes.find((n) => n.id === s.expanded?.id)
+              : undefined
+          if (open && (isFile(open) || isLink(open))) {
+            s.armContextChat(open.id)
+            return
+          }
+        }
         spawn(key === 'n' ? 'note' : key === 'f' ? 'file' : key === 't' ? 'link' : 'chat')
       }
     }
@@ -467,50 +481,35 @@ function CanvasInner(): React.JSX.Element {
           </ReactFlow>
         )}
 
-        {/* Bottom-left: the tools cluster by Settings — Memory above Actions,
-            Settings anchored at the very bottom. */}
         {loaded && (
-          <div className="absolute bottom-4 left-4 z-10 flex flex-col items-start gap-2">
-            {/* hidden (not unmounted) in split screen so the legends keep state */}
-            <div className={split ? 'hidden' : 'contents'}>
-              {folder?.current && <MemoryLegend />}
-            </div>
-            <div className={`flex items-end gap-2 ${split ? 'hidden' : ''}`}>
-              {folder?.current && <ActionsLegend />}
-              <SettingsButton />
-            </div>
+          <div className="absolute bottom-4 left-4 z-10 flex items-end gap-2">
+            {/* hidden (not unmounted) in split screen so Recent keeps its state */}
+            <div className={split ? 'hidden' : 'contents'}>{folder?.current && <Sidebar />}</div>
+            <SettingsButton />
           </div>
         )}
 
         {loaded && <PlacementOverlay />}
 
-        {/* Top-left: the navigation column — repo breadcrumb, then its
-            subfolders, then Recent. z-20 keeps it above the placement layer
-            (z-10), so an armed spawn button can still be clicked to disarm. */}
+        {/* Corner legends replace the old app header. z-20 keeps them above
+            the placement layer (z-10), so an armed spawn button can still be
+            clicked to disarm — same as when the header sat over the canvas. */}
         {loaded && folder?.current && (
           <div
             className={`absolute top-4 left-4 z-20 flex flex-col gap-2 ${split ? 'hidden' : ''}`}
           >
-            <FolderChip />
-            {/* Recent + Folders share a fixed-width wrap row: expanded panels
-                take the full width (own line); collapsed pills shrink to just
-                under half, so two collapsed ones sit side by side and a lone
-                collapsed one drops to a half slot. */}
-            <div className="flex w-56 flex-wrap items-start gap-2">
-              <Sidebar />
-              <FoldersLegend />
-            </div>
+            <ActionsLegend />
+            <MemoryLegend />
           </div>
         )}
-        {/* Model + effort pickers stay top-right — hide in split screen */}
-        {loaded && folder?.current && (
-          <div
-            className={`absolute top-4 right-4 z-20 flex items-center gap-2 ${split ? 'hidden' : ''}`}
-          >
-            <EffortSelector />
-            <ModelSelector />
-          </div>
-        )}
+        {/* Model + Folder pickers sit under the docked panel — hide in split screen */}
+        <div
+          className={`absolute top-4 right-4 z-20 flex items-center gap-2 ${split ? 'hidden' : ''}`}
+        >
+          {loaded && folder?.current && <EffortSelector />}
+          {loaded && folder?.current && <ModelSelector />}
+          <FolderChip />
+        </div>
 
         {folder && !folder.current && (
           <div className="flex h-full w-full flex-col items-center justify-center gap-4">

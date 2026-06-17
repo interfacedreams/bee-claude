@@ -38,12 +38,7 @@ const api = {
   folder: {
     get: (): Promise<FolderState> => ipcRenderer.invoke('folder:get'),
     choose: (): Promise<FolderState | null> => ipcRenderer.invoke('folder:choose'),
-    select: (path: string): Promise<FolderState> => ipcRenderer.invoke('folder:select', path),
-    // Navigate within the open repo: an immediate subfolder name, or null to
-    // climb back to the root.
-    enter: (sub: string | null): Promise<FolderState> => ipcRenderer.invoke('folder:enter', sub),
-    // Make a new subfolder (named) under the repo root.
-    create: (name: string): Promise<FolderState> => ipcRenderer.invoke('folder:create', name)
+    select: (path: string): Promise<FolderState> => ipcRenderer.invoke('folder:select', path)
   },
   canvas: {
     load: (): Promise<CanvasDoc | null> => ipcRenderer.invoke('canvas:load'),

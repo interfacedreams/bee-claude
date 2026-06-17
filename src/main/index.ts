@@ -34,7 +34,6 @@ import type {
   CanvasDoc,
   ChosenFile,
   EffortId,
-  FolderInfo,
   FolderState,
   McpConfig,
   McpProbeResult,
@@ -54,21 +53,9 @@ import type {
 // null until a folder has been picked (the renderer shows a picker prompt).
 let folderRoot: string | null = null
 
-// The top-level repo the user opened from the picker — the breadcrumb's home.
-// `folderRoot` may descend into one of its subfolders; `sessionRoot` stays put
-// so navigation has a fixed root to climb back to and to list subfolders from.
-let sessionRoot: string | null = null
-
 interface FolderSettings {
   current: string | null
-  // The top-level repo (so a restart lands you flat at the root, not inside a
-  // subfolder you'd navigated to).
-  sessionRoot?: string | null
-  // Every folder ever made current or touched — the candidate set for recents.
   recents: string[]
-  // path → epoch ms of last content edit. Only touched folders earn a visible
-  // recents slot; navigating into a folder never writes here.
-  touched?: Record<string, number>
 }
 
 const settingsFile = (): string => join(app.getPath('userData'), 'folders.json')
@@ -84,40 +71,6 @@ async function readSettings(): Promise<FolderSettings> {
     }
   }
   return { current: null, recents: [] }
-}
-
-async function writeSettings(settings: FolderSettings): Promise<void> {
-  await fs.writeFile(settingsFile(), JSON.stringify(settings, null, 2))
-}
-
-// Record that the current folder was edited — its updatedAt stamp and recents
-// membership. Called from the canvas save (which the renderer fires on every
-// content change); navigation alone never reaches here, so folders you only
-// pass through stay out of the recents list.
-async function touchFolder(path: string): Promise<void> {
-  const settings = await readSettings()
-  const touched = { ...(settings.touched ?? {}) }
-  touched[path] = Date.now()
-  settings.touched = touched
-  if (!settings.recents.includes(path)) {
-    settings.recents = [path, ...settings.recents].slice(0, 50)
-  }
-  await writeSettings(settings)
-}
-
-// Immediate subdirectories of `root`, hidden/dotfolders (.canvas, .git, …)
-// excluded. The FOLDERS legend lists these; navigation is one level deep, so we
-// never recurse.
-async function listSubfolders(root: string): Promise<string[]> {
-  try {
-    const entries = await fs.readdir(root, { withFileTypes: true })
-    return entries
-      .filter((e) => e.isDirectory() && !e.name.startsWith('.'))
-      .map((e) => e.name)
-      .sort((a, b) => a.localeCompare(b))
-  } catch {
-    return []
-  }
 }
 
 const canvasFileFor = (root: string): string => join(root, '.canvas', 'canvas.json')
@@ -518,73 +471,25 @@ async function chatCountFor(root: string): Promise<number> {
 
 async function buildFolderState(): Promise<FolderState> {
   const settings = await readSettings()
-  const touched = settings.touched ?? {}
-  type Row = FolderInfo & { at: number }
-  const rows: Row[] = []
+  const recents: FolderState['recents'] = []
   for (const path of settings.recents) {
     if (!(await dirExists(path))) continue
     const chatCount = await chatCountFor(path)
-    const isTouched = path in touched
-    // A folder shows only once it's been touched (created/edited content), plus
-    // the open one; chatCount>0 keeps folders from before touch-tracking visible.
-    if (isTouched || chatCount > 0 || path === folderRoot) {
-      rows.push({ path, name: basename(path), chatCount, at: touched[path] ?? 0 })
+    // Only folders you actually chatted in earn a recents slot (plus the open one).
+    if (chatCount > 0 || path === folderRoot) {
+      recents.push({ path, name: basename(path), chatCount })
     }
   }
-  rows.sort((a, b) => b.at - a.at) // most recently touched first
-  const recents = rows.map(({ path, name, chatCount }) => ({ path, name, chatCount }))
-  return {
-    current: folderRoot,
-    root: sessionRoot,
-    subfolders: sessionRoot ? await listSubfolders(sessionRoot) : [],
-    recents
-  }
+  return { current: folderRoot, recents }
 }
 
-// Open a top-level repo (from the picker or a recents click): it becomes both
-// the canvas root and the breadcrumb home, landing you flat with no breadcrumb.
 async function setCurrentFolder(root: string): Promise<FolderState> {
   folderRoot = root
-  sessionRoot = root
   noteFiles.clear() // rebuilt by the next canvas:load
   const settings = await readSettings()
   settings.current = root
-  settings.sessionRoot = root
-  if (!settings.recents.includes(root)) {
-    settings.recents = [root, ...settings.recents].slice(0, 50)
-  }
-  await writeSettings(settings)
-  return buildFolderState()
-}
-
-// Navigate within the current repo: `sub` is an immediate subfolder name of
-// `sessionRoot`, or null to climb back to the root. This shifts only the canvas
-// root (folderRoot); the breadcrumb home stays put. It leaves no trace in
-// settings — a folder you merely visit doesn't enter recents until you edit it.
-// Make a new subfolder under the repo root from a user-typed name. The empty
-// directory is real on disk immediately, so the next folder state lists it; we
-// don't step into it — the user stays put and clicks in when ready.
-async function createSubfolder(name: string): Promise<FolderState> {
-  if (!sessionRoot) return buildFolderState()
-  const safe = sanitizeTitle(typeof name === 'string' ? name : '')
-  if (!safe) return buildFolderState()
-  try {
-    await fs.mkdir(join(sessionRoot, safe)) // EEXIST is fine — it'll just show in the list
-  } catch {
-    // already there, or an unwritable root — nothing to add
-  }
-  return buildFolderState()
-}
-
-async function enterFolder(sub: string | null): Promise<FolderState> {
-  if (!sessionRoot) return buildFolderState()
-  if (sub != null && (sub.includes('/') || sub.includes('\\') || sub.startsWith('.'))) {
-    return buildFolderState() // only immediate, non-hidden children are navigable
-  }
-  const target = sub ? join(sessionRoot, sub) : sessionRoot
-  if (!(await dirExists(target))) return buildFolderState()
-  folderRoot = target
-  noteFiles.clear() // rebuilt by the next canvas:load
+  settings.recents = [root, ...settings.recents.filter((r) => r !== root)].slice(0, 20)
+  await fs.writeFile(settingsFile(), JSON.stringify(settings, null, 2))
   return buildFolderState()
 }
 
@@ -608,14 +513,6 @@ function registerFolderIpc(): void {
     if (await dirExists(path)) return setCurrentFolder(path)
     return buildFolderState() // gone from disk — the rebuilt state simply drops it
   })
-
-  ipcMain.handle('folder:enter', (_event, sub: string | null): Promise<FolderState> =>
-    enterFolder(sub)
-  )
-
-  ipcMain.handle('folder:create', (_event, name: string): Promise<FolderState> =>
-    createSubfolder(name)
-  )
 }
 
 // Minimal .env loader (ANTHROPIC_API_KEY etc.) — real values never leave the main
@@ -2111,9 +2008,6 @@ function registerCanvasIpc(): void {
     if (!folderRoot) return
     await writeCanvasFile(folderRoot, doc)
     await syncMemoryIndex(folderRoot, doc)
-    // A save is the renderer's signal that real content changed here — mark the
-    // folder touched so it earns (and bumps up) its recents slot.
-    await touchFolder(folderRoot)
   })
 
   ipcMain.handle(
@@ -2240,13 +2134,7 @@ app.whenReady().then(async () => {
 
   // Reopen the folder from last time if it still exists.
   const settings = await readSettings()
-  // Always reopen flat at the top-level repo, never inside a subfolder you'd
-  // navigated to last session.
-  const restored = settings.sessionRoot ?? settings.current
-  if (restored && (await dirExists(restored))) {
-    folderRoot = restored
-    sessionRoot = restored
-  }
+  if (settings.current && (await dirExists(settings.current))) folderRoot = settings.current
 
   registerCanvasIpc()
   registerNoteIpc()

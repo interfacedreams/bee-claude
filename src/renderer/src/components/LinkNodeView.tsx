@@ -72,11 +72,12 @@ function LinkNodeView({ id, data, selected }: NodeProps<LinkNode>): React.JSX.El
           '--np-ring': `${palette.accent}B3`
         } as React.CSSProperties
       }
-      className={`relative isolate flex w-full flex-col rounded-[14px] border border-(--np-edge) shadow-md ${
-        // Docked: the body is just a stub, so let the card shrink to its header
-        // + that stub instead of holding the tall browser height (all whitespace).
-        docked ? 'h-auto' : 'h-full'
-      } ${selected ? 'ring-2 ring-(--np-ring)' : ''}`}
+      className={`relative isolate flex h-full w-full flex-col rounded-[14px] border border-(--np-edge) shadow-md ${
+        // Hold the full browser height even while docked (the stub centers in it),
+        // so the card's box — and every edge/placement anchored to it — stays put
+        // when the page pops into the side panel. Matches files and chats.
+        selected ? 'ring-2 ring-(--np-ring)' : ''
+      }`}
     >
       <TransformFrame id={id} />
       {/* Opaque card fill — above the transform tab (deeper negative z), below

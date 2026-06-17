@@ -3,6 +3,7 @@ import { useReactFlow } from '@xyflow/react'
 import { Brain, FileCode2, Info, Minus, Plus, X } from 'lucide-react'
 import { useCanvasStore, isNote, type CanvasNode } from '../store/canvas'
 import { paletteFor } from '../lib/palette'
+import { usePersistedCollapse } from '../lib/usePersistedCollapse'
 import Tooltip from './Tooltip'
 
 // White paper — the corner legends share the black-and-white vocabulary of the
@@ -28,7 +29,7 @@ export default function MemoryLegend(): React.JSX.Element | null {
   const nodes = useCanvasStore((s) => s.nodes)
   const toggleMinimize = useCanvasStore((s) => s.toggleMinimize)
   const { fitView } = useReactFlow()
-  const [collapsed, setCollapsed] = useState(false)
+  const [collapsed, setCollapsed] = usePersistedCollapse('memory')
   const [explain, setExplain] = useState(false)
 
   const pinned = useMemo(() => nodes.filter((n) => isNote(n) && n.data.pinned), [nodes])

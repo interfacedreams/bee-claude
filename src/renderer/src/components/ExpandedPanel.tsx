@@ -1,5 +1,5 @@
-import { Maximize2, PanelRight, X } from 'lucide-react'
-import { useCanvasStore, isChat, isLink, isNote } from '../store/canvas'
+import { Maximize2, MessageSquarePlus, PanelRight, X } from 'lucide-react'
+import { useCanvasStore, isChat, isFile, isLink, isNote } from '../store/canvas'
 import { paletteFor } from '../lib/palette'
 import { CHIP_BUTTON, CHIP_BUTTON_ACTIVE } from '../lib/nodeChrome'
 import ChatBody from './ChatBody'
@@ -33,6 +33,7 @@ export default function ExpandedPanel(): React.JSX.Element | null {
   const mode = useCanvasStore((s) => s.expanded?.mode ?? null)
   const expandNode = useCanvasStore((s) => s.expandNode)
   const collapseExpanded = useCanvasStore((s) => s.collapseExpanded)
+  const chatAbout = useCanvasStore((s) => s.chatAbout)
   if (!node || !mode) return null
 
   const full = mode === 'full'
@@ -109,13 +110,33 @@ export default function ExpandedPanel(): React.JSX.Element | null {
           >
             <Maximize2 className="h-[22px] w-[22px]" />
           </button>
-          <span
-            className={`min-w-0 flex-1 truncate text-[26px] font-medium text-(--np-deep) ${
-              data.title ? '' : 'opacity-50'
-            }`}
-          >
-            {data.title || untitled}
-          </span>
+          {/* Links carry their address in the browser toolbar just below, so a
+              title here would only repeat it — leave the header a bare spacer. */}
+          {isLink(node) ? (
+            <span className="min-w-0 flex-1" />
+          ) : (
+            <span
+              className={`min-w-0 flex-1 truncate text-[26px] font-medium text-(--np-deep) ${
+                data.title ? '' : 'opacity-50'
+              }`}
+            >
+              {data.title || untitled}
+            </span>
+          )}
+          {/* "Chat about this": only for files/links in the half-sheet (full
+              screen is single-doc reading). Spawns a chat wired to read this
+              resource on the live canvas beside the panel — the C accelerator,
+              made visible (and the reliable path when a webview holds focus). */}
+          {!full && (isFile(node) || isLink(node)) && (
+            <button
+              type="button"
+              onClick={() => chatAbout(node.id)}
+              title="Chat about this (C)"
+              className={CHIP_BUTTON}
+            >
+              <MessageSquarePlus className="h-[23px] w-[23px]" />
+            </button>
+          )}
         </div>
       </div>
 
