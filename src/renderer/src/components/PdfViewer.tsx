@@ -104,7 +104,7 @@ function PdfViewer({ file, focused }: { file: string; focused: boolean }): React
   return (
     <div
       ref={scrollRef}
-      className="nowheel h-full w-full overflow-x-hidden overflow-y-auto bg-neutral-200/60"
+      className="nowheel select-text h-full w-full overflow-x-hidden overflow-y-auto bg-neutral-200/60"
     >
       {error ? (
         <div className="flex h-full w-full flex-col items-center justify-center gap-2 text-neutral-400">
@@ -158,6 +158,7 @@ function PdfPage({
 }): React.JSX.Element {
   const holderRef = useRef<HTMLDivElement>(null)
   const canvasRef = useRef<HTMLCanvasElement>(null)
+  const textRef = useRef<HTMLDivElement>(null)
   const [near, setNear] = useState(false)
   const [aspect, setAspect] = useState(DEFAULT_ASPECT)
 
@@ -225,6 +226,47 @@ function PdfPage({
     }
   }, [near, doc, pageNum, width, renderZoom])
 
+  // A transparent layer of positioned glyphs over the canvas, so text can be
+  // highlighted and copied. Laid out in CSS pixels (--total-scale-factor =
+  // the page's display scale) — independent of the canvas's retina/zoom
+  // oversampling, and cheap enough to keep mounted while the page is near.
+  useEffect(() => {
+    const container = textRef.current
+    if (!container) return
+    if (!near) {
+      container.textContent = '' // drop the spans alongside the evicted bitmap
+      return
+    }
+    let cancelled = false
+    let textLayer: pdfjs.TextLayer | undefined
+    void (async () => {
+      try {
+        const page = await doc.getPage(pageNum)
+        if (cancelled) return
+        const base = page.getViewport({ scale: 1 })
+        const cssScale = width / base.width
+        container.style.setProperty('--total-scale-factor', String(cssScale))
+        container.textContent = ''
+        textLayer = new pdfjs.TextLayer({
+          textContentSource: page.streamTextContent(),
+          container,
+          viewport: page.getViewport({ scale: cssScale })
+        })
+        await textLayer.render()
+      } catch (err) {
+        // cancellation (scroll, resize, unmount) aborts the stream — routine.
+        // Selectable text is a nicety, so only surface unexpected failures.
+        if (!(err instanceof Error && err.name === 'AbortException')) {
+          console.error(`[pdf] page ${pageNum} text layer failed:`, err)
+        }
+      }
+    })()
+    return () => {
+      cancelled = true
+      textLayer?.cancel()
+    }
+  }, [near, doc, pageNum, width])
+
   return (
     <div
       ref={holderRef}
@@ -232,6 +274,7 @@ function PdfPage({
       style={{ width, height: Math.round(width * aspect) }}
     >
       <canvas ref={canvasRef} className="absolute inset-0 h-full w-full" />
+      <div ref={textRef} className="pdf-text-layer" />
     </div>
   )
 }

@@ -20,6 +20,57 @@ body {
   -webkit-user-select: text;
 }
 
+/* pdf.js text layer: transparent, selectable glyphs positioned over the page
+   canvas so text can be highlighted and copied. Distilled from pdfjs-dist's
+   web/pdf_viewer.css — just the rules the core TextLayer relies on, plus a
+   visible ::selection (the bundled stylesheet hides it for its own highlight
+   overlay, which we don't use). The container carries --total-scale-factor. */
+.pdf-text-layer {
+  position: absolute;
+  inset: 0;
+  text-align: initial;
+  overflow: clip;
+  opacity: 1;
+  line-height: 1;
+  text-size-adjust: none;
+  forced-color-adjust: none;
+  transform-origin: 0 0;
+  z-index: 1;
+  --scale-round-x: 1px;
+  --scale-round-y: 1px;
+  --min-font-size: 1;
+  --text-scale-factor: calc(var(--total-scale-factor) * var(--min-font-size));
+  --min-font-size-inv: calc(1 / var(--min-font-size));
+}
+.pdf-text-layer :is(span, br) {
+  color: transparent;
+  position: absolute;
+  white-space: pre;
+  cursor: text;
+  transform-origin: 0% 0%;
+  user-select: text;
+  -webkit-user-select: text;
+}
+.pdf-text-layer > :not(.markedContent),
+.pdf-text-layer .markedContent span:not(.markedContent) {
+  z-index: 1;
+  --font-height: 0;
+  --scale-x: 1;
+  --rotate: 0deg;
+  font-size: calc(var(--text-scale-factor) * var(--font-height));
+  transform: rotate(var(--rotate)) scaleX(var(--scale-x)) scale(var(--min-font-size-inv));
+}
+.pdf-text-layer .markedContent {
+  display: contents;
+}
+.pdf-text-layer span[role='img'] {
+  user-select: none;
+  cursor: default;
+}
+.pdf-text-layer ::selection {
+  background: rgb(0 110 255 / 0.3);
+}
+
 /* Wheel zooms the canvas everywhere, so transcripts scroll via a visible scrollbar */
 .transcript-scroll::-webkit-scrollbar {
   width: 8px;

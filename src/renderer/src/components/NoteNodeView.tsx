@@ -309,6 +309,14 @@ function NoteNodeView({ id, data, selected }: NodeProps<NoteNode>): React.JSX.El
         )}
         <div className="nodrag relative ml-auto flex shrink-0 items-center gap-1">
           {!data.minimized && !isClaudeMd && (
+            <TitleEditSlot
+              editing={editingTitle}
+              duplicate={duplicate}
+              onEdit={() => setEditingTitle(true)}
+              renameHint="Rename this note"
+            />
+          )}
+          {!data.minimized && !isClaudeMd && (
             <button
               type="button"
               onClick={() => togglePin(id)}
@@ -335,14 +343,6 @@ function NoteNodeView({ id, data, selected }: NodeProps<NoteNode>): React.JSX.El
             >
               <Brain className="h-[25px] w-[25px]" />
             </div>
-          )}
-          {!data.minimized && !isClaudeMd && (
-            <TitleEditSlot
-              editing={editingTitle}
-              duplicate={duplicate}
-              onEdit={() => setEditingTitle(true)}
-              renameHint="Rename this note"
-            />
           )}
           {!data.minimized && <TransformButton id={id} />}
           {!isClaudeMd && (

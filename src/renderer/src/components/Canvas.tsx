@@ -30,7 +30,8 @@ import SettingsButton from './SettingsButton'
 import PlacementOverlay from './PlacementOverlay'
 import DeleteChatModal from './DeleteChatModal'
 import ExpandedPanel from './ExpandedPanel'
-import { useCanvasStore, NODE_W, isChat, isNote } from '../store/canvas'
+import { useCanvasStore, NODE_W, isChat, isNote, isFile, isLink } from '../store/canvas'
+import type { CanvasNode } from '../store/canvas'
 import type { ChosenFile } from '../../../shared/types'
 import { CTX_HANDLE_ID, OUTPUT_HANDLE_ID, INPUT_HANDLE_ID } from '../lib/nodeChrome'
 import { paletteFor } from '../lib/palette'
@@ -57,6 +58,21 @@ function pastedUrl(text: string): string | null {
   } catch {
     return null
   }
+}
+
+// Shift+click pairs two nodes into the one edge their kinds allow, using click
+// order to pick the direction (source = first click, target = second). A chat
+// feeds a note (output edge); a resource — note/file/link — feeds a chat
+// (context edge). Anything else (two notes, two chats, a chat→file) has no
+// valid edge, so we return null and the pair just stays multi-selected.
+// Research chats can neither drive a note nor take context, so they never pair.
+type PairEdge = { kind: 'output' | 'context'; source: string; target: string }
+function pairEdge(a: CanvasNode, b: CanvasNode): PairEdge | null {
+  if (isChat(a) && a.data.kind !== 'research' && isNote(b))
+    return { kind: 'output', source: a.id, target: b.id }
+  if ((isNote(a) || isFile(a) || isLink(a)) && isChat(b) && b.data.kind !== 'research')
+    return { kind: 'context', source: a.id, target: b.id }
+  return null
 }
 
 function CanvasInner(): React.JSX.Element {
@@ -149,6 +165,55 @@ function CanvasInner(): React.JSX.Element {
     },
     [addContextEdge, addOutputEdge]
   )
+
+  // Shift+click multi-select doubles as connect: holding Shift and clicking two
+  // nodes that form a valid source→target pair (in click order) draws the edge
+  // and clears the selection. Any other Shift selection — two notes, three
+  // nodes — just stays a multi-selection you can drag together. The ordered
+  // ref is our own tally (React Flow's `selected` set isn't ordered, and we
+  // need direction); a plain pane click resets it so it can't go stale.
+  const shiftSel = useRef<string[]>([])
+  const clearSelection = useCallback(() => {
+    shiftSel.current = []
+    // Selection is controlled — deselect through the same change pipe React
+    // Flow uses, or the next render from the store would just restore it.
+    const deselect = useCanvasStore
+      .getState()
+      .nodes.filter((n) => n.selected)
+      .map((n) => ({ id: n.id, type: 'select' as const, selected: false }))
+    if (deselect.length) onNodesChange(deselect)
+  }, [onNodesChange])
+
+  const onNodeClick = useCallback(
+    (e: React.MouseEvent, node: { id: string }) => {
+      if (!e.shiftKey) {
+        shiftSel.current = []
+        return
+      }
+      const cur = shiftSel.current
+      if (cur.includes(node.id)) {
+        // toggled back off — mirrors React Flow deselecting it
+        shiftSel.current = cur.filter((x) => x !== node.id)
+        return
+      }
+      const next = [...cur, node.id]
+      shiftSel.current = next
+      if (next.length !== 2) return // first pick, or 3+ — never auto-connect
+      const all = useCanvasStore.getState().nodes
+      const a = all.find((n) => n.id === next[0])
+      const b = all.find((n) => n.id === next[1])
+      const edge = a && b ? pairEdge(a, b) : null
+      if (!edge) return // not a connectable pair — leave them multi-selected
+      if (edge.kind === 'output') addOutputEdge(edge.source, edge.target)
+      else addContextEdge(edge.source, edge.target)
+      clearSelection()
+    },
+    [addContextEdge, addOutputEdge, clearSelection]
+  )
+
+  const onPaneClick = useCallback(() => {
+    shiftSel.current = []
+  }, [])
 
   // Electron's default for a dropped file is to navigate the window to it —
   // block that everywhere (top bar, sidebar, modals), so a missed drop is a
@@ -374,6 +439,8 @@ function CanvasInner(): React.JSX.Element {
               }
             })}
             onNodesChange={onNodesChange}
+            onNodeClick={onNodeClick}
+            onPaneClick={onPaneClick}
             onConnect={handleConnect}
             nodeTypes={nodeTypes}
             edgeTypes={edgeTypes}

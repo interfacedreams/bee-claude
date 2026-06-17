@@ -1,6 +1,7 @@
 import { useEffect, useImperativeHandle, useRef, type Ref } from 'react'
 import { EditorContent, useEditor, type Editor } from '@tiptap/react'
-import type { JSONContent } from '@tiptap/core'
+import { Extension, InputRule, type JSONContent } from '@tiptap/core'
+import { Selection } from '@tiptap/pm/state'
 import StarterKit from '@tiptap/starter-kit'
 import HardBreak from '@tiptap/extension-hard-break'
 import { Markdown } from '@tiptap/markdown'
@@ -15,6 +16,44 @@ import 'katex/dist/katex.min.css'
 // are how AI turns hard-wrap prose at ~80 cols — which setMarkdown demotes.
 const BackslashHardBreak = HardBreak.extend({
   renderMarkdown: () => '\\\n'
+})
+
+// StarterKit's heading input rule (`^#{1,6}\s`) only fires at the true start of
+// a textblock. Notes routinely hold several visual lines inside one paragraph,
+// joined by hard breaks (pasted text, AI "\<newline>" breaks). Typing "# " at
+// the start of such a line then sits there as literal text — the `#` isn't at
+// the block start, so nothing converts. This rule covers exactly that gap: when
+// "#{1,6} " is typed right after a hard break, split the block there and promote
+// the trailing line to a heading. Hard breaks serialize to "\n" in the input-
+// rule text (their toText spec), so the leading "\n" is what marks the seam.
+const HeadingAfterBreak = Extension.create({
+  name: 'headingAfterBreak',
+  addInputRules() {
+    return [
+      new InputRule({
+        find: /\n(#{1,6})\s$/,
+        handler: ({ state, range, match }) => {
+          const headingType = state.schema.nodes.heading
+          if (!headingType) return null
+          const hbPos = range.from
+          // The match's leading "\n" must be a real hard break (not, say, an
+          // inline-math leaf that also renders as a placeholder).
+          if (state.doc.nodeAt(hbPos)?.type.name !== 'hardBreak') return null
+          const level = match[1].length
+          const hashStart = range.to - level
+          const { tr } = state
+          // Delete right-to-left so earlier positions stay valid: drop the
+          // "#{level}" markers, then the hard break, then split the seam into a
+          // fresh heading block carrying the rest of the line.
+          tr.delete(hashStart, range.to)
+          tr.delete(hbPos, hashStart)
+          tr.split(hbPos, 1, [{ type: headingType, attrs: { level } }])
+          tr.setSelection(Selection.near(tr.doc.resolve(hbPos + 1)))
+          return null
+        }
+      })
+    ]
+  }
 })
 
 // marked (under @tiptap/markdown) keeps soft breaks as literal "\n" inside
@@ -95,6 +134,7 @@ function NoteEditor({
         hardBreak: false // replaced by BackslashHardBreak
       }),
       BackslashHardBreak,
+      HeadingAfterBreak,
       // KaTeX rendering for `$…$` (inline) and `$$…$$` (block) math. Both
       // carry markdown tokenizers/serializers, so the `$`-delimited LaTeX the
       // AI writes parses into rendered nodes and round-trips back to the file.

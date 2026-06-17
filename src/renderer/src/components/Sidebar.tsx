@@ -1,7 +1,7 @@
 import { useMemo, useState } from 'react'
 import { useReactFlow } from '@xyflow/react'
-import { Minus, Plus } from 'lucide-react'
-import { useCanvasStore, isChat, isNote, type CanvasNode } from '../store/canvas'
+import { File, Link, Minus, Plus } from 'lucide-react'
+import { useCanvasStore, isChat, isNote, isFile, isLink, type CanvasNode } from '../store/canvas'
 import { paletteFor } from '../lib/palette'
 
 // Most-recently-updated first; nodes that predate updatedAt sink to the bottom.
@@ -15,9 +15,10 @@ const PAPER = '#FFFFFF'
 
 /**
  * "Recent" panel floating over the canvas's bottom-left corner: one list of
- * chats and notes together, most recently updated first. Kind is coded by the
- * row marker's shape — circle for chats, square for notes — the same shapes
- * their canvas connector handles wear. Clicking a row does what the node's
+ * every resource — chats, notes, files (PDFs/images) and links — most recently
+ * updated first. Kind is coded by the row marker: a circle for chats and a
+ * square for notes (the shapes their canvas connector handles wear), a link
+ * icon for links and a file icon for files. Clicking a row does what the node's
  * expand chip does: un-minimize if needed and center the viewport on it.
  * Height hugs the content up to roughly a third of the screen, then scrolls.
  * The header's minus chip (a small cousin of the node windows' minimize chip)
@@ -31,11 +32,15 @@ export default function Sidebar(): React.JSX.Element | null {
   const { fitView } = useReactFlow()
   const [collapsed, setCollapsed] = useState(false)
 
-  // Chats and notes share the list; files and ephemeral researcher
-  // transcripts stay off it.
+  // Every resource shares the list — chats, notes, files and links; only the
+  // ephemeral researcher transcripts stay off it.
   const listed = useMemo(
     () =>
-      nodes.filter((n) => isNote(n) || (isChat(n) && n.data.kind !== 'research')).sort(byRecency),
+      nodes
+        .filter(
+          (n) => isNote(n) || isFile(n) || isLink(n) || (isChat(n) && n.data.kind !== 'research')
+        )
+        .sort(byRecency),
     [nodes]
   )
 
@@ -87,24 +92,41 @@ export default function Sidebar(): React.JSX.Element | null {
       </div>
       <div className="min-h-0 overflow-y-auto p-1">
         {listed.map((n) => {
-          const note = isNote(n)
-          const untitled = note ? 'Untitled note' : 'Untitled chat'
+          const accent = paletteFor(n.data.color).accent
+          // Links show their URL directly; everything else shows its title.
+          const link = isLink(n)
+          const label = link ? n.data.url : n.data.title
+          const untitled = isNote(n)
+            ? 'Untitled note'
+            : isFile(n)
+              ? n.data.kind === 'pdf'
+                ? 'Untitled PDF'
+                : 'Untitled image'
+              : link
+                ? 'Empty link'
+                : 'Untitled chat'
           return (
             <button
               key={n.id}
               type="button"
               onClick={() => focusNode(n)}
-              title={n.data.title || untitled}
+              title={label || untitled}
               className={`flex w-full cursor-pointer items-center gap-2 rounded-[7px] px-2.5 py-1.5 text-left transition-colors hover:bg-neutral-100 ${
                 n.selected ? 'bg-neutral-100' : ''
               }`}
             >
-              <span
-                className={`h-2 w-2 shrink-0 ${note ? 'rounded-[2px]' : 'rounded-full'}`}
-                style={{ backgroundColor: paletteFor(n.data.color).accent }}
-              />
+              {link ? (
+                <Link className="h-3 w-3 shrink-0" style={{ color: accent }} />
+              ) : isFile(n) ? (
+                <File className="h-3 w-3 shrink-0" style={{ color: accent }} />
+              ) : (
+                <span
+                  className={`h-2 w-2 shrink-0 ${isNote(n) ? 'rounded-[2px]' : 'rounded-full'}`}
+                  style={{ backgroundColor: accent }}
+                />
+              )}
               <span className="min-w-0 flex-1 truncate text-[13px] text-neutral-800">
-                {n.data.title || <span className="text-neutral-400 italic">{untitled}</span>}
+                {label || <span className="text-neutral-400 italic">{untitled}</span>}
               </span>
             </button>
           )

@@ -70,8 +70,6 @@ export default function SettingsButton(): React.JSX.Element {
     if (!permissions) void load()
   }, [open, permissions, load])
 
-  const anyAuto = permissions?.allowWebSearch || permissions?.autoAllowAll
-
   return (
     <>
       <button
@@ -80,7 +78,7 @@ export default function SettingsButton(): React.JSX.Element {
         title="Global settings"
         className="flex h-9 w-9 shrink-0 cursor-pointer items-center justify-center rounded-[6px] border border-black bg-white text-black shadow-md transition-colors hover:bg-neutral-100"
       >
-        <Settings className="h-4 w-4" fill={anyAuto ? 'currentColor' : 'none'} />
+        <Settings className="h-4 w-4" />
       </button>
 
       {open && (

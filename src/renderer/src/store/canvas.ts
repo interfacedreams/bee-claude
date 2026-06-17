@@ -732,6 +732,7 @@ export const useCanvasStore = create<CanvasState>((set, get) => {
         title: pf.name.replace(/\.[^.]+$/, ''), // the original file name, sans extension
         color: nextColor(),
         kind: pf.kind,
+        updatedAt: Date.now(),
         ...(pf.dataUrl ? { dataUrl: pf.dataUrl } : {})
       })
     )
@@ -939,6 +940,7 @@ export const useCanvasStore = create<CanvasState>((set, get) => {
     addLinkAt: (position, url) => {
       const node = makeLinkNode(position, {
         color: nextColor(),
+        updatedAt: Date.now(),
         ...(url ? { url, title: hostTitle(url) } : {})
       })
       if (url) node.height = LINK_FRAME.height
@@ -1185,7 +1187,8 @@ export const useCanvasStore = create<CanvasState>((set, get) => {
       // The forked session carries the parent's context up to the anchor —
       // the node's transcript starts clean and shows only what diverges.
       const node = makeNode(findForkSpot(get().nodes, parent, siblings), {
-        title: `${parent.data.title} ⑂`.trim(),
+        // Start untitled like a fresh chat; the title is generated from the
+        // fork's own first turn rather than inherited from the parent.
         color: parent.data.color, // forks stay in the parent's color family
         status: 'idle',
         growthCap: parent.data.growthCap,
@@ -1647,6 +1650,7 @@ export const useCanvasStore = create<CanvasState>((set, get) => {
                     file: p.file,
                     dataUrl: p.dataUrl,
                     minimized: p.minimized ?? false,
+                    updatedAt: p.updatedAt,
                     ...(p.minimized && p.height != null ? { savedHeight: p.height } : {})
                   }
                 ),
@@ -1659,6 +1663,7 @@ export const useCanvasStore = create<CanvasState>((set, get) => {
                 color: p.color,
                 url: p.url,
                 minimized: p.minimized ?? false,
+                updatedAt: p.updatedAt,
                 ...(p.minimized && p.height != null ? { savedHeight: p.height } : {})
               })
               return {
