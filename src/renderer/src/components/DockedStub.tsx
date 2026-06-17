@@ -11,9 +11,9 @@ export default function DockedStub({ onClick }: { onClick: () => void }): React.
       type="button"
       onClick={onClick}
       title="Close the side panel"
-      className="nodrag flex min-h-[120px] flex-1 cursor-pointer flex-col items-center justify-center gap-2 text-(--np-deep) opacity-50 transition-opacity hover:opacity-80"
+      className="nodrag flex flex-1 cursor-pointer items-center justify-center gap-2 py-3 text-(--np-deep) opacity-50 transition-opacity hover:opacity-80"
     >
-      <PanelRight className="h-8 w-8" />
+      <PanelRight className="h-[18px] w-[18px]" />
       <span className="text-[14px] font-medium">Open in the side panel</span>
     </button>
   )

@@ -1,7 +1,8 @@
 import { useEffect, useState } from 'react'
-import { KeyRound, Settings, Wrench } from 'lucide-react'
+import { KeyRound, Plug, Settings, Wrench } from 'lucide-react'
 import { useSettingsStore } from '../store/settings'
 import AuthSection from './AuthSection'
+import McpSection from './McpSection'
 import TabbedModal, { type ModalTab } from './TabbedModal'
 
 /**
@@ -48,11 +49,12 @@ function ToggleRow({
   )
 }
 
-type Tab = 'subscription' | 'permissions'
+type Tab = 'subscription' | 'permissions' | 'mcp'
 
 const TABS: ModalTab[] = [
   { id: 'subscription', label: 'Credentials', icon: KeyRound },
-  { id: 'permissions', label: 'Tools', icon: Wrench }
+  { id: 'permissions', label: 'Tools', icon: Wrench },
+  { id: 'mcp', label: 'Connectors', icon: Plug }
 ]
 
 export default function SettingsButton(): React.JSX.Element {
@@ -98,11 +100,6 @@ export default function SettingsButton(): React.JSX.Element {
                 <Wrench className="h-4 w-4" />
                 Tool permissions
               </h3>
-              <p className="mb-3 text-[12px] text-neutral-600">
-                Permissions for every folder and chat. Changes apply immediately — a prompt already
-                waiting on screen is answered too.
-              </p>
-
               {permissions ? (
                 <div className="flex flex-col gap-1">
                   <ToggleRow
@@ -127,6 +124,8 @@ export default function SettingsButton(): React.JSX.Element {
               )}
             </div>
           )}
+
+          {tab === 'mcp' && <McpSection />}
         </TabbedModal>
       )}
     </>

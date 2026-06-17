@@ -72,9 +72,11 @@ function LinkNodeView({ id, data, selected }: NodeProps<LinkNode>): React.JSX.El
           '--np-ring': `${palette.accent}B3`
         } as React.CSSProperties
       }
-      className={`relative isolate flex h-full w-full flex-col rounded-[14px] border border-(--np-edge) shadow-md ${
-        selected ? 'ring-2 ring-(--np-ring)' : ''
-      }`}
+      className={`relative isolate flex w-full flex-col rounded-[14px] border border-(--np-edge) shadow-md ${
+        // Docked: the body is just a stub, so let the card shrink to its header
+        // + that stub instead of holding the tall browser height (all whitespace).
+        docked ? 'h-auto' : 'h-full'
+      } ${selected ? 'ring-2 ring-(--np-ring)' : ''}`}
     >
       <TransformFrame id={id} />
       {/* Opaque card fill — above the transform tab (deeper negative z), below
@@ -110,7 +112,7 @@ function LinkNodeView({ id, data, selected }: NodeProps<LinkNode>): React.JSX.El
         style={ctxHandleStyle(palette.accent, 'right', 'square')}
       />
 
-      {!data.minimized && data.url && (
+      {!data.minimized && !docked && data.url && (
         <>
           <NodeResizeControl
             position="right"
@@ -160,6 +162,15 @@ function LinkNodeView({ id, data, selected }: NodeProps<LinkNode>): React.JSX.El
         <PanelChips mode={mode} open={open} />
         {bare ? (
           <span className="min-w-0 flex-1" />
+        ) : docked ? (
+          // Docked in the side panel: the card is a stub, so its header is just
+          // a where-it-is marker — show the URL alone, no rename/transform combo.
+          <span
+            title={data.url}
+            className="min-w-0 flex-1 truncate text-[17px] text-(--np-deep) opacity-60"
+          >
+            {data.url ? data.url.replace(/^https?:\/\/(www\.)?/, '') : 'Untitled tab'}
+          </span>
         ) : editingTitle && !data.minimized ? (
           <input
             ref={titleRef}
@@ -197,7 +208,7 @@ function LinkNodeView({ id, data, selected }: NodeProps<LinkNode>): React.JSX.El
         {/* where the tab is right now — data.url tracks every navigation, so
             this reads true even minimized or zoomed out (title is flex-1, so
             the URL sits against the buttons) */}
-        {data.url && !bare && (
+        {data.url && !bare && !docked && (
           <span
             title={data.url}
             className="max-w-[45%] shrink-[2] truncate text-[17px] text-(--np-deep) opacity-60"
@@ -206,7 +217,7 @@ function LinkNodeView({ id, data, selected }: NodeProps<LinkNode>): React.JSX.El
           </span>
         )}
         <div className="nodrag relative ml-auto flex shrink-0 items-center gap-1">
-          {!data.minimized && !bare && (
+          {!data.minimized && !bare && !docked && (
             <TitleEditSlot
               editing={editingTitle}
               duplicate={duplicate}
@@ -214,7 +225,7 @@ function LinkNodeView({ id, data, selected }: NodeProps<LinkNode>): React.JSX.El
               renameHint="Rename this tab"
             />
           )}
-          {!data.minimized && <TransformButton id={id} />}
+          {!data.minimized && !docked && <TransformButton id={id} />}
           <button
             type="button"
             onClick={() => requestDelete(id)}

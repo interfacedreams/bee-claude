@@ -25,6 +25,7 @@ import MemoryLegend from './MemoryLegend'
 import ModelSelector from './ModelSelector'
 import EffortSelector from './EffortSelector'
 import FolderChip from './FolderChip'
+import FoldersLegend from './FoldersLegend'
 import Sidebar from './Sidebar'
 import SettingsButton from './SettingsButton'
 import PlacementOverlay from './PlacementOverlay'
@@ -466,35 +467,50 @@ function CanvasInner(): React.JSX.Element {
           </ReactFlow>
         )}
 
+        {/* Bottom-left: the tools cluster by Settings — Memory above Actions,
+            Settings anchored at the very bottom. */}
         {loaded && (
-          <div className="absolute bottom-4 left-4 z-10 flex items-end gap-2">
-            {/* hidden (not unmounted) in split screen so Recent keeps its state */}
-            <div className={split ? 'hidden' : 'contents'}>{folder?.current && <Sidebar />}</div>
-            <SettingsButton />
+          <div className="absolute bottom-4 left-4 z-10 flex flex-col items-start gap-2">
+            {/* hidden (not unmounted) in split screen so the legends keep state */}
+            <div className={split ? 'hidden' : 'contents'}>
+              {folder?.current && <MemoryLegend />}
+            </div>
+            <div className={`flex items-end gap-2 ${split ? 'hidden' : ''}`}>
+              {folder?.current && <ActionsLegend />}
+              <SettingsButton />
+            </div>
           </div>
         )}
 
         {loaded && <PlacementOverlay />}
 
-        {/* Corner legends replace the old app header. z-20 keeps them above
-            the placement layer (z-10), so an armed spawn button can still be
-            clicked to disarm — same as when the header sat over the canvas. */}
+        {/* Top-left: the navigation column — repo breadcrumb, then its
+            subfolders, then Recent. z-20 keeps it above the placement layer
+            (z-10), so an armed spawn button can still be clicked to disarm. */}
         {loaded && folder?.current && (
           <div
             className={`absolute top-4 left-4 z-20 flex flex-col gap-2 ${split ? 'hidden' : ''}`}
           >
-            <ActionsLegend />
-            <MemoryLegend />
+            <FolderChip />
+            {/* Recent + Folders share a fixed-width wrap row: expanded panels
+                take the full width (own line); collapsed pills shrink to just
+                under half, so two collapsed ones sit side by side and a lone
+                collapsed one drops to a half slot. */}
+            <div className="flex w-56 flex-wrap items-start gap-2">
+              <Sidebar />
+              <FoldersLegend />
+            </div>
           </div>
         )}
-        {/* Model + Folder pickers sit under the docked panel — hide in split screen */}
-        <div
-          className={`absolute top-4 right-4 z-20 flex items-center gap-2 ${split ? 'hidden' : ''}`}
-        >
-          {loaded && folder?.current && <EffortSelector />}
-          {loaded && folder?.current && <ModelSelector />}
-          <FolderChip />
-        </div>
+        {/* Model + effort pickers stay top-right — hide in split screen */}
+        {loaded && folder?.current && (
+          <div
+            className={`absolute top-4 right-4 z-20 flex items-center gap-2 ${split ? 'hidden' : ''}`}
+          >
+            <EffortSelector />
+            <ModelSelector />
+          </div>
+        )}
 
         {folder && !folder.current && (
           <div className="flex h-full w-full flex-col items-center justify-center gap-4">

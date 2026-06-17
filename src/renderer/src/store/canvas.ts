@@ -417,6 +417,11 @@ interface CanvasState {
   init: () => Promise<Viewport | null>
   chooseFolder: () => Promise<Viewport | null>
   selectFolder: (path: string) => Promise<Viewport | null>
+  // Navigate within the open repo via the FOLDERS legend / breadcrumb: a
+  // subfolder name to descend, or null to climb back to the root.
+  enterFolder: (sub: string | null) => Promise<Viewport | null>
+  // Make a new named subfolder under the repo root (without leaving the canvas).
+  createFolder: (name: string) => Promise<void>
   onNodesChange: (changes: NodeChange<CanvasNode>[]) => void
   setViewport: (vp: Viewport) => void
   addNodeAt: (position: { x: number; y: number }) => ChatNode
@@ -909,6 +914,20 @@ export const useCanvasStore = create<CanvasState>((set, get) => {
       if (path === get().folder?.current || anyStreaming()) return null
       await flushSave()
       return switchFolder(await window.api.folder.select(path))
+    },
+
+    enterFolder: async (sub) => {
+      if (anyStreaming()) return null
+      await flushSave()
+      return switchFolder(await window.api.folder.enter(sub))
+    },
+
+    createFolder: async (name) => {
+      const trimmed = name.trim()
+      if (!trimmed) return
+      // Creating a folder doesn't swap the canvas — just refresh the folder
+      // state so the new subfolder shows up in the legend.
+      set({ folder: await window.api.folder.create(trimmed) })
     },
 
     persistSoon: persist,

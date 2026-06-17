@@ -8,13 +8,17 @@ import {
   safeStorage,
   session
 } from 'electron'
-import { randomUUID } from 'crypto'
+import { createHash, randomUUID } from 'crypto'
 import { promises as fs, readFileSync, constants as fsConstants } from 'fs'
 import { tmpdir } from 'os'
 import { basename, extname, isAbsolute, join, relative, resolve } from 'path'
 import { electronApp, optimizer, is } from '@electron-toolkit/utils'
 import { ElectronBlocker, adsAndTrackingLists } from '@ghostery/adblocker-electron'
-import { query, type SDKUserMessage } from '@anthropic-ai/claude-agent-sdk'
+import {
+  query,
+  type McpServerConfig,
+  type SDKUserMessage
+} from '@anthropic-ai/claude-agent-sdk'
 import icon from '../../resources/icon.png?asset'
 import {
   BROWSE_PARTITION,
@@ -30,7 +34,10 @@ import type {
   CanvasDoc,
   ChosenFile,
   EffortId,
+  FolderInfo,
   FolderState,
+  McpConfig,
+  McpProbeResult,
   ModelId,
   NoteDoc,
   NoteVersion,
@@ -47,9 +54,21 @@ import type {
 // null until a folder has been picked (the renderer shows a picker prompt).
 let folderRoot: string | null = null
 
+// The top-level repo the user opened from the picker — the breadcrumb's home.
+// `folderRoot` may descend into one of its subfolders; `sessionRoot` stays put
+// so navigation has a fixed root to climb back to and to list subfolders from.
+let sessionRoot: string | null = null
+
 interface FolderSettings {
   current: string | null
+  // The top-level repo (so a restart lands you flat at the root, not inside a
+  // subfolder you'd navigated to).
+  sessionRoot?: string | null
+  // Every folder ever made current or touched — the candidate set for recents.
   recents: string[]
+  // path → epoch ms of last content edit. Only touched folders earn a visible
+  // recents slot; navigating into a folder never writes here.
+  touched?: Record<string, number>
 }
 
 const settingsFile = (): string => join(app.getPath('userData'), 'folders.json')
@@ -65,6 +84,40 @@ async function readSettings(): Promise<FolderSettings> {
     }
   }
   return { current: null, recents: [] }
+}
+
+async function writeSettings(settings: FolderSettings): Promise<void> {
+  await fs.writeFile(settingsFile(), JSON.stringify(settings, null, 2))
+}
+
+// Record that the current folder was edited — its updatedAt stamp and recents
+// membership. Called from the canvas save (which the renderer fires on every
+// content change); navigation alone never reaches here, so folders you only
+// pass through stay out of the recents list.
+async function touchFolder(path: string): Promise<void> {
+  const settings = await readSettings()
+  const touched = { ...(settings.touched ?? {}) }
+  touched[path] = Date.now()
+  settings.touched = touched
+  if (!settings.recents.includes(path)) {
+    settings.recents = [path, ...settings.recents].slice(0, 50)
+  }
+  await writeSettings(settings)
+}
+
+// Immediate subdirectories of `root`, hidden/dotfolders (.canvas, .git, …)
+// excluded. The FOLDERS legend lists these; navigation is one level deep, so we
+// never recurse.
+async function listSubfolders(root: string): Promise<string[]> {
+  try {
+    const entries = await fs.readdir(root, { withFileTypes: true })
+    return entries
+      .filter((e) => e.isDirectory() && !e.name.startsWith('.'))
+      .map((e) => e.name)
+      .sort((a, b) => a.localeCompare(b))
+  } catch {
+    return []
+  }
 }
 
 const canvasFileFor = (root: string): string => join(root, '.canvas', 'canvas.json')
@@ -465,25 +518,73 @@ async function chatCountFor(root: string): Promise<number> {
 
 async function buildFolderState(): Promise<FolderState> {
   const settings = await readSettings()
-  const recents: FolderState['recents'] = []
+  const touched = settings.touched ?? {}
+  type Row = FolderInfo & { at: number }
+  const rows: Row[] = []
   for (const path of settings.recents) {
     if (!(await dirExists(path))) continue
     const chatCount = await chatCountFor(path)
-    // Only folders you actually chatted in earn a recents slot (plus the open one).
-    if (chatCount > 0 || path === folderRoot) {
-      recents.push({ path, name: basename(path), chatCount })
+    const isTouched = path in touched
+    // A folder shows only once it's been touched (created/edited content), plus
+    // the open one; chatCount>0 keeps folders from before touch-tracking visible.
+    if (isTouched || chatCount > 0 || path === folderRoot) {
+      rows.push({ path, name: basename(path), chatCount, at: touched[path] ?? 0 })
     }
   }
-  return { current: folderRoot, recents }
+  rows.sort((a, b) => b.at - a.at) // most recently touched first
+  const recents = rows.map(({ path, name, chatCount }) => ({ path, name, chatCount }))
+  return {
+    current: folderRoot,
+    root: sessionRoot,
+    subfolders: sessionRoot ? await listSubfolders(sessionRoot) : [],
+    recents
+  }
 }
 
+// Open a top-level repo (from the picker or a recents click): it becomes both
+// the canvas root and the breadcrumb home, landing you flat with no breadcrumb.
 async function setCurrentFolder(root: string): Promise<FolderState> {
   folderRoot = root
+  sessionRoot = root
   noteFiles.clear() // rebuilt by the next canvas:load
   const settings = await readSettings()
   settings.current = root
-  settings.recents = [root, ...settings.recents.filter((r) => r !== root)].slice(0, 20)
-  await fs.writeFile(settingsFile(), JSON.stringify(settings, null, 2))
+  settings.sessionRoot = root
+  if (!settings.recents.includes(root)) {
+    settings.recents = [root, ...settings.recents].slice(0, 50)
+  }
+  await writeSettings(settings)
+  return buildFolderState()
+}
+
+// Navigate within the current repo: `sub` is an immediate subfolder name of
+// `sessionRoot`, or null to climb back to the root. This shifts only the canvas
+// root (folderRoot); the breadcrumb home stays put. It leaves no trace in
+// settings — a folder you merely visit doesn't enter recents until you edit it.
+// Make a new subfolder under the repo root from a user-typed name. The empty
+// directory is real on disk immediately, so the next folder state lists it; we
+// don't step into it — the user stays put and clicks in when ready.
+async function createSubfolder(name: string): Promise<FolderState> {
+  if (!sessionRoot) return buildFolderState()
+  const safe = sanitizeTitle(typeof name === 'string' ? name : '')
+  if (!safe) return buildFolderState()
+  try {
+    await fs.mkdir(join(sessionRoot, safe)) // EEXIST is fine — it'll just show in the list
+  } catch {
+    // already there, or an unwritable root — nothing to add
+  }
+  return buildFolderState()
+}
+
+async function enterFolder(sub: string | null): Promise<FolderState> {
+  if (!sessionRoot) return buildFolderState()
+  if (sub != null && (sub.includes('/') || sub.includes('\\') || sub.startsWith('.'))) {
+    return buildFolderState() // only immediate, non-hidden children are navigable
+  }
+  const target = sub ? join(sessionRoot, sub) : sessionRoot
+  if (!(await dirExists(target))) return buildFolderState()
+  folderRoot = target
+  noteFiles.clear() // rebuilt by the next canvas:load
   return buildFolderState()
 }
 
@@ -507,6 +608,14 @@ function registerFolderIpc(): void {
     if (await dirExists(path)) return setCurrentFolder(path)
     return buildFolderState() // gone from disk — the rebuilt state simply drops it
   })
+
+  ipcMain.handle('folder:enter', (_event, sub: string | null): Promise<FolderState> =>
+    enterFolder(sub)
+  )
+
+  ipcMain.handle('folder:create', (_event, name: string): Promise<FolderState> =>
+    createSubfolder(name)
+  )
 }
 
 // Minimal .env loader (ANTHROPIC_API_KEY etc.) — real values never leave the main
@@ -675,6 +784,12 @@ async function readPermissionSettings(): Promise<PermissionSettings> {
 
 function autoAllowed(toolName: string): boolean {
   if (permissionSettings.autoAllowAll) return true
+  // A configured MCP server's tools (mcp__<server>__<tool>) are pre-approved —
+  // adding the server in Settings is itself consent to let the agent call it.
+  if (toolName.startsWith('mcp__') && activeMcpServers()) {
+    const server = toolName.slice('mcp__'.length).split('__')[0]
+    if (mcpServerNames.has(server)) return true
+  }
   return permissionSettings.allowWebSearch && (toolName === 'WebSearch' || toolName === 'WebFetch')
 }
 
@@ -702,6 +817,208 @@ function registerPermissionSettingsIpc(): void {
         if (autoAllowed(toolName)) resolve(true)
       }
       return permissionSettings
+    }
+  )
+}
+
+// --- MCP connectors -------------------------------------------------------
+// App-wide MCP servers, persisted in userData/mcp.json. The user pastes the
+// standard Claude Desktop `mcpServers` JSON shape; when enabled, every agent
+// turn gets these servers and their tools are auto-approved in canUseTool
+// (configuring a server is consent to use it). The raw JSON — credentials and
+// all — is encrypted at rest with safeStorage, same as auth.json.
+
+const mcpFile = (): string => join(app.getPath('userData'), 'mcp.json')
+
+let mcpEnabled = false
+let mcpJson = '' // raw `mcpServers`-shaped JSON, '' when unconfigured
+// Derived from mcpJson on every load/save so the agent and canUseTool never
+// re-parse: the SDK-ready map, the set of server names, and any parse error.
+let mcpServersMap: Record<string, McpServerConfig> = {}
+let mcpServerNames = new Set<string>()
+let mcpParseError: string | null = null
+
+// Parse the pasted JSON into a server map. Accepts either the full
+// `{ "mcpServers": { … } }` wrapper (what docs show) or the bare inner map.
+// Validation is light — enough to catch a malformed paste, not to vet every
+// field; the SDK rejects truly bad configs at connect time.
+function parseMcpJson(text: string): {
+  map: Record<string, McpServerConfig>
+  names: string[]
+  error: string | null
+} {
+  const trimmed = text.trim()
+  if (!trimmed) return { map: {}, names: [], error: null }
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(trimmed)
+  } catch {
+    return { map: {}, names: [], error: 'Not valid JSON.' }
+  }
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    return { map: {}, names: [], error: 'Expected a JSON object of servers.' }
+  }
+  const obj = parsed as Record<string, unknown>
+  const servers =
+    obj.mcpServers && typeof obj.mcpServers === 'object' && !Array.isArray(obj.mcpServers)
+      ? (obj.mcpServers as Record<string, unknown>)
+      : obj
+  const map: Record<string, McpServerConfig> = {}
+  for (const [name, cfg] of Object.entries(servers)) {
+    if (!cfg || typeof cfg !== 'object' || Array.isArray(cfg)) {
+      return { map: {}, names: [], error: `Server "${name}" must be an object.` }
+    }
+    const c = cfg as Record<string, unknown>
+    const hasCommand = typeof c.command === 'string'
+    const hasUrl = typeof c.url === 'string'
+    if (!hasCommand && !hasUrl) {
+      return {
+        map: {},
+        names: [],
+        error: `Server "${name}" needs a "command" (stdio) or "url" (http/sse).`
+      }
+    }
+    map[name] = cfg as McpServerConfig
+  }
+  return { map, names: Object.keys(map), error: null }
+}
+
+function refreshMcpDerived(): void {
+  const { map, names, error } = parseMcpJson(mcpJson)
+  mcpServersMap = map
+  mcpServerNames = new Set(names)
+  mcpParseError = error
+}
+
+function mcpConfigView(): McpConfig {
+  return {
+    enabled: mcpEnabled,
+    json: mcpJson,
+    serverNames: [...mcpServerNames],
+    error: mcpParseError
+  }
+}
+
+/** The server map to hand the SDK, or null when MCP is off / unconfigured /
+ *  unparseable — callers spread it conditionally. */
+function activeMcpServers(): Record<string, McpServerConfig> | null {
+  if (!mcpEnabled || mcpParseError || mcpServerNames.size === 0) return null
+  return mcpServersMap
+}
+
+/** allowedTools entries that admit every tool of each active server. Empty
+ *  when MCP is off — used by research mode, which sets a strict allowlist. */
+function mcpAllowedTools(): string[] {
+  return activeMcpServers() ? [...mcpServerNames].map((n) => `mcp__${n}`) : []
+}
+
+async function readMcpConfig(): Promise<void> {
+  try {
+    const raw = JSON.parse(await fs.readFile(mcpFile(), 'utf8'))
+    mcpEnabled = raw.enabled === true
+    mcpJson = decodeSecret(raw.config) ?? ''
+  } catch {
+    mcpEnabled = false
+    mcpJson = ''
+  }
+  refreshMcpDerived()
+}
+
+async function writeMcpConfig(): Promise<void> {
+  if (!mcpJson.trim() && !mcpEnabled) {
+    await fs.rm(mcpFile(), { force: true })
+    return
+  }
+  const body = { enabled: mcpEnabled, config: encodeSecret(mcpJson) }
+  await fs.writeFile(mcpFile(), JSON.stringify(body), { mode: 0o600 })
+}
+
+// Probe the configured servers for a live connection status to show in
+// Settings. We open a query with the servers but feed it a streaming input
+// that never yields a message — so the subprocess connects to the servers and
+// emits its `init` system message, but the model never takes a turn (≈zero
+// token cost). `alwaysLoad` forces the connect to block (capped ~5s) so the
+// status is settled by init, then we read it and tear the query down.
+async function probeMcpServers(): Promise<McpProbeResult> {
+  const servers = activeMcpServers()
+  if (!servers) {
+    return {
+      ok: false,
+      servers: [],
+      error: mcpParseError ?? (mcpEnabled ? 'No servers configured.' : 'Connectors are off.')
+    }
+  }
+  if (!oauthToken && !userApiKey && !envApiKey) {
+    return { ok: false, servers: [], error: 'Add a Claude token or API key first.' }
+  }
+
+  const loaded: Record<string, McpServerConfig> = Object.fromEntries(
+    Object.entries(servers).map(([name, cfg]) => [
+      name,
+      { ...(cfg as Record<string, unknown>), alwaysLoad: true } as McpServerConfig
+    ])
+  )
+  const ac = new AbortController()
+  // Input that yields nothing until aborted — keeps the session idle (no model
+  // turn) yet alive long enough to read mcpServerStatus().
+  const idleInput = (async function* (): AsyncGenerator<SDKUserMessage> {
+    await new Promise<void>((res) =>
+      ac.signal.addEventListener('abort', () => res(), { once: true })
+    )
+  })()
+  const probe = query({
+    prompt: idleInput,
+    options: {
+      cwd: folderRoot ?? app.getPath('userData'),
+      model: TITLE_MODEL,
+      mcpServers: loaded,
+      abortController: ac
+    }
+  })
+  const timer = setTimeout(() => ac.abort(), 15000)
+  try {
+    for await (const msg of probe) {
+      if (msg.type === 'system' && msg.subtype === 'init') {
+        const statuses = await probe.mcpServerStatus()
+        const byName = new Map(statuses.map((s) => [s.name, s]))
+        return {
+          ok: true,
+          // Report every configured server, even one the SDK dropped silently.
+          servers: [...mcpServerNames].map((name) => {
+            const s = byName.get(name)
+            if (!s) return { name, status: 'error' as const, error: 'Not started.' }
+            return {
+              name,
+              status: s.status as McpProbeResult['servers'][number]['status'],
+              ...(s.error ? { error: s.error } : {}),
+              ...(s.tools ? { toolCount: s.tools.length } : {})
+            }
+          })
+        }
+      }
+    }
+  } catch (err) {
+    return { ok: false, servers: [], error: err instanceof Error ? err.message : 'Probe failed.' }
+  } finally {
+    ac.abort()
+    clearTimeout(timer)
+  }
+  return { ok: false, servers: [], error: 'No response from the agent.' }
+}
+
+function registerMcpIpc(): void {
+  ipcMain.handle('mcp:get', (): McpConfig => mcpConfigView())
+
+  ipcMain.handle('mcp:probe', (): Promise<McpProbeResult> => probeMcpServers())
+
+  ipcMain.handle(
+    'mcp:set',
+    async (_event, patch: Partial<Pick<McpConfig, 'enabled' | 'json'>>): Promise<McpConfig> => {
+      if (typeof patch.enabled === 'boolean') mcpEnabled = patch.enabled
+      if (typeof patch.json === 'string') mcpJson = patch.json
+      refreshMcpDerived()
+      await writeMcpConfig()
+      return mcpConfigView()
     }
   )
 }
@@ -771,13 +1088,20 @@ function registerAdblockIpc(): void {
 
 // Research mode: the lead agent of a chat turn may spawn these subagents.
 // Each spawn renders as a display-only child node on the canvas.
-const RESEARCHER_DEF = {
-  description: 'Focused web researcher for one angle of a question',
-  prompt:
-    'You are a focused web researcher. Use WebSearch to find sources and WebFetch to read the most ' +
-    'promising ones. Cross-check important claims. Return a concise report: key findings as bullets ' +
-    'with source URLs inline, ending with a list of all sources used.',
-  tools: ['WebSearch', 'WebFetch']
+// Built per-turn so an enabled MCP server's tools join WebSearch/WebFetch
+// (additive — researchers keep built-in web search even with a custom server).
+function researcherDef(): { description: string; prompt: string; tools: string[] } {
+  const mcpTools = mcpAllowedTools()
+  return {
+    description: 'Focused web researcher for one angle of a question',
+    prompt:
+      'You are a focused web researcher. Use WebSearch to find sources and WebFetch to read the most ' +
+      'promising ones' +
+      (mcpTools.length ? ', plus any configured search tools available to you' : '') +
+      '. Cross-check important claims. Return a concise report: key findings as bullets ' +
+      'with source URLs inline, ending with a list of all sources used.',
+    tools: ['WebSearch', 'WebFetch', ...mcpTools]
+  }
 }
 const RESEARCH_APPEND =
   'Research mode is on for this request. Plan briefly, then spawn 2-3 researcher subagents IN PARALLEL ' +
@@ -1211,12 +1535,21 @@ function registerThreadIpc(): void {
               preset: 'claude_code',
               ...(systemAppend ? { append: systemAppend } : {})
             },
+            // Configured MCP servers are available to every turn; their tools
+            // auto-approve in canUseTool (see autoAllowed). null when MCP is
+            // off/unconfigured, so the key is omitted entirely.
+            ...(activeMcpServers() ? { mcpServers: activeMcpServers()! } : {}),
             ...(research
               ? {
-                  agents: { researcher: RESEARCHER_DEF },
+                  // Researchers also get any configured MCP tools, alongside
+                  // WebSearch/WebFetch (additive — research still works with no
+                  // MCP server set up).
+                  agents: { researcher: researcherDef() },
                   // Pre-approved so a research turn doesn't spam permission
                   // prompts; everything else still routes through canUseTool.
-                  allowedTools: ['Agent', 'WebSearch', 'WebFetch'],
+                  // Research sets a strict allowlist, so MCP tools must be named
+                  // here too or they'd be blocked despite being configured.
+                  allowedTools: ['Agent', 'WebSearch', 'WebFetch', ...mcpAllowedTools()],
                   forwardSubagentText: true
                 }
               : {}),
@@ -1276,6 +1609,12 @@ function registerThreadIpc(): void {
 
         // resumeSessionAt anchors on assistant-message uuids — remember the turn's last.
         let lastAssistantUuid: string | undefined
+        // The renderer funnels every text delta into one assistant bubble, so a
+        // turn that emits text → tool call → more text would render the two runs
+        // glued together ("…search for it.No, I don't…"). Track whether any text
+        // has streamed; when a fresh text block opens after that, inject a blank
+        // line so the segments stay separate paragraphs.
+        let streamedAnyText = false
         // Last note content mirrored to the renderer — only emit real changes.
         let mirroredNote: string | undefined
 
@@ -1380,12 +1719,18 @@ function registerThreadIpc(): void {
             }
           } else if (msg.type === 'stream_event') {
             const ev = msg.event
-            if (
-              ev.type === 'content_block_delta' &&
-              ev.delta.type === 'text_delta' &&
-              msg.parent_tool_use_id === null
-            ) {
-              emit({ nodeId, type: 'delta', text: ev.delta.text })
+            if (msg.parent_tool_use_id === null) {
+              if (ev.type === 'content_block_start' && ev.content_block.type === 'text') {
+                // A new text block after earlier text (a tool call sat between):
+                // separate them so they don't render as one run-on paragraph.
+                if (streamedAnyText) emit({ nodeId, type: 'delta', text: '\n\n' })
+              } else if (
+                ev.type === 'content_block_delta' &&
+                ev.delta.type === 'text_delta'
+              ) {
+                emit({ nodeId, type: 'delta', text: ev.delta.text })
+                streamedAnyText = true
+              }
             }
           } else if (msg.type === 'result') {
             const u = msg.usage
@@ -1598,6 +1943,65 @@ async function syncMemoryIndex(root: string, doc: CanvasDoc): Promise<void> {
   await fs.writeFile(path, index)
 }
 
+// Surface the folder's top-level files as cards so opening a folder reveals
+// what's in it. Supported kinds only — markdown notes, PDFs and images;
+// already-referenced files, hidden files and subdirectories are skipped. Ids are
+// derived from the filename (sha1) so a reload never double-places the same file,
+// and the moment the user moves a card the next save pins it — from then on it
+// loads as an ordinary node and this pass leaves it alone. Positions are
+// provisional, laid out in a grid to the right of the CLAUDE.md card.
+async function autoPlaceTopLevel(root: string, doc: CanvasDoc): Promise<void> {
+  const entries = await fs.readdir(root, { withFileTypes: true }).catch(() => [])
+  const takenNotes = new Set(noteFiles.values()) // title-named .md + CLAUDE.md
+  const takenMedia = new Set(
+    doc.nodes.filter((n) => n.kind === 'file' && n.file).map((n) => n.file)
+  )
+  const skipMd = new Set([CLAUDE_MD_FILE, 'MEMORY.md'])
+  const autoId = (kind: string, name: string): string =>
+    `auto-${kind}-${createHash('sha1').update(name).digest('hex').slice(0, 12)}`
+  let placed = 0
+  const nextPos = (): { x: number; y: number } => {
+    const col = placed % 3
+    const row = Math.floor(placed / 3)
+    placed++
+    return { x: 1040 + col * 340, y: 32 + row * 260 }
+  }
+  for (const ent of [...entries].sort((a, b) => a.name.localeCompare(b.name))) {
+    if (!ent.isFile() || ent.name.startsWith('.')) continue
+    const name = ent.name
+    if (extname(name).toLowerCase() === '.md') {
+      if (skipMd.has(name) || takenNotes.has(name) || !isSafeNoteFile(name)) continue
+      const id = autoId('note', name)
+      if (doc.nodes.some((n) => n.id === id)) continue
+      noteFiles.set(id, name)
+      doc.nodes.push({
+        id,
+        kind: 'note',
+        position: nextPos(),
+        width: 380,
+        title: name.replace(/\.md$/i, ''),
+        file: name,
+        content: await readTextIfExists(join(root, name)),
+        noteVersions: await readNoteVersions(root, id)
+      })
+      continue
+    }
+    const mime = fileMimeFor(name)
+    if (!mime || takenMedia.has(name) || !isSafeFileRel(name)) continue
+    const id = autoId('file', name)
+    if (doc.nodes.some((n) => n.id === id)) continue
+    doc.nodes.push({
+      id,
+      kind: 'file',
+      position: nextPos(),
+      width: 300,
+      title: name,
+      file: name,
+      dataUrl: mime === 'application/pdf' ? undefined : await imageDataUrl(root, name)
+    })
+  }
+}
+
 function registerCanvasIpc(): void {
   ipcMain.handle('canvas:load', async (): Promise<CanvasDoc | null> => {
     const root = folderRoot
@@ -1609,7 +2013,16 @@ function registerCanvasIpc(): void {
     noteFiles.set(CLAUDE_MD_ID, CLAUDE_MD_FILE)
     await ensureClaudeMdFile(root)
     try {
-      const doc: CanvasDoc = JSON.parse(await fs.readFile(canvasFileFor(root), 'utf8'))
+      let doc: CanvasDoc
+      try {
+        doc = JSON.parse(await fs.readFile(canvasFileFor(root), 'utf8'))
+      } catch {
+        // No canvas.json yet (a fresh folder, or a subfolder opened for the
+        // first time) — start empty; the CLAUDE.md inject below and the
+        // auto-placement pass fill it in. Not persisted here, so merely visiting
+        // a folder never writes to it or marks it touched.
+        doc = { version: 1, nodes: [], edges: [], viewport: { x: 0, y: 0, zoom: 1 } }
+      }
       if (!doc.nodes.some((n) => n.id === CLAUDE_MD_ID)) {
         doc.nodes.unshift({
           id: CLAUDE_MD_ID,
@@ -1687,6 +2100,7 @@ function registerCanvasIpc(): void {
           }
         })
       )
+      await autoPlaceTopLevel(root, doc)
       return doc
     } catch {
       return null
@@ -1697,6 +2111,9 @@ function registerCanvasIpc(): void {
     if (!folderRoot) return
     await writeCanvasFile(folderRoot, doc)
     await syncMemoryIndex(folderRoot, doc)
+    // A save is the renderer's signal that real content changed here — mark the
+    // folder touched so it earns (and bumps up) its recents slot.
+    await touchFolder(folderRoot)
   })
 
   ipcMain.handle(
@@ -1819,10 +2236,17 @@ app.whenReady().then(async () => {
   applyAuthEnv()
 
   permissionSettings = await readPermissionSettings()
+  await readMcpConfig()
 
   // Reopen the folder from last time if it still exists.
   const settings = await readSettings()
-  if (settings.current && (await dirExists(settings.current))) folderRoot = settings.current
+  // Always reopen flat at the top-level repo, never inside a subfolder you'd
+  // navigated to last session.
+  const restored = settings.sessionRoot ?? settings.current
+  if (restored && (await dirExists(restored))) {
+    folderRoot = restored
+    sessionRoot = restored
+  }
 
   registerCanvasIpc()
   registerNoteIpc()
@@ -1831,6 +2255,7 @@ app.whenReady().then(async () => {
   registerFolderIpc()
   registerAuthIpc()
   registerPermissionSettingsIpc()
+  registerMcpIpc()
 
   createWindow()
 

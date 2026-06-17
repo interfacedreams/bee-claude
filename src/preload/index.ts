@@ -5,6 +5,8 @@ import type {
   CanvasDoc,
   ChosenFile,
   FolderState,
+  McpConfig,
+  McpProbeResult,
   NoteVersion,
   PermissionReply,
   PermissionSettings,
@@ -27,10 +29,21 @@ const api = {
     setPermissions: (patch: Partial<PermissionSettings>): Promise<PermissionSettings> =>
       ipcRenderer.invoke('settings:permissions:set', patch)
   },
+  mcp: {
+    get: (): Promise<McpConfig> => ipcRenderer.invoke('mcp:get'),
+    set: (patch: Partial<Pick<McpConfig, 'enabled' | 'json'>>): Promise<McpConfig> =>
+      ipcRenderer.invoke('mcp:set', patch),
+    probe: (): Promise<McpProbeResult> => ipcRenderer.invoke('mcp:probe')
+  },
   folder: {
     get: (): Promise<FolderState> => ipcRenderer.invoke('folder:get'),
     choose: (): Promise<FolderState | null> => ipcRenderer.invoke('folder:choose'),
-    select: (path: string): Promise<FolderState> => ipcRenderer.invoke('folder:select', path)
+    select: (path: string): Promise<FolderState> => ipcRenderer.invoke('folder:select', path),
+    // Navigate within the open repo: an immediate subfolder name, or null to
+    // climb back to the root.
+    enter: (sub: string | null): Promise<FolderState> => ipcRenderer.invoke('folder:enter', sub),
+    // Make a new subfolder (named) under the repo root.
+    create: (name: string): Promise<FolderState> => ipcRenderer.invoke('folder:create', name)
   },
   canvas: {
     load: (): Promise<CanvasDoc | null> => ipcRenderer.invoke('canvas:load'),

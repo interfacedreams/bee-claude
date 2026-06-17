@@ -270,7 +270,11 @@ function ChatNodeView({ id, data, selected }: NodeProps<ChatNode>): React.JSX.El
               if (!data.minimized) setEditingTitle(true)
             }}
             title={data.minimized ? undefined : 'Double-click to rename'}
-            className={`min-w-0 flex-1 truncate text-[23px] font-medium text-(--np-deep) ${data.title ? '' : 'opacity-50'} ${awaitingTitle ? 'animate-pulse tracking-widest' : ''}`}
+            className={`min-w-0 flex-1 truncate text-[23px] font-medium ${
+              awaitingTitle
+                ? 'animate-pulse tracking-widest text-neutral-400'
+                : `text-(--np-deep) ${data.title ? '' : 'opacity-50'}`
+            }`}
           >
             {awaitingTitle ? '●●●' : data.title || 'New chat'}
           </span>
