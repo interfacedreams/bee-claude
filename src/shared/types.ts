@@ -11,6 +11,7 @@ export interface FolderInfo {
 export interface FolderState {
   current: string | null
   recents: FolderInfo[] // folders with at least one chat (plus the current one), most recent first
+  createParent: string // where "New Folder" creates next — sticky to the last create
 }
 
 // The tab nodes' shared session partition: its own persistent cookie jar,

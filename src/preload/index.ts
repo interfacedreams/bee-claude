@@ -38,7 +38,10 @@ const api = {
   folder: {
     get: (): Promise<FolderState> => ipcRenderer.invoke('folder:get'),
     choose: (): Promise<FolderState | null> => ipcRenderer.invoke('folder:choose'),
-    select: (path: string): Promise<FolderState> => ipcRenderer.invoke('folder:select', path)
+    select: (path: string): Promise<FolderState> => ipcRenderer.invoke('folder:select', path),
+    create: (name: string, parent?: string): Promise<FolderState | null> =>
+      ipcRenderer.invoke('folder:create', name, parent),
+    pickCreateParent: (): Promise<string | null> => ipcRenderer.invoke('folder:pickCreateParent')
   },
   canvas: {
     load: (): Promise<CanvasDoc | null> => ipcRenderer.invoke('canvas:load'),
@@ -79,7 +82,19 @@ const api = {
     attach: (sourcePath: string): Promise<{ file: string } | null> =>
       ipcRenderer.invoke('file:attach', sourcePath),
     // PDF bytes for the inline viewer; Buffers arrive here as Uint8Array.
-    pdfData: (rel: string): Promise<Uint8Array | null> => ipcRenderer.invoke('file:pdfData', rel)
+    pdfData: (rel: string): Promise<Uint8Array | null> => ipcRenderer.invoke('file:pdfData', rel),
+    // A 1-3 sentence index blurb for a pinned image/PDF (vision Haiku one-shot).
+    describe: (rel: string): Promise<string | null> => ipcRenderer.invoke('file:describe', rel)
+  },
+  link: {
+    // Save a pinned page's Defuddle markdown as a hidden clip the agent can Read.
+    // The renderer extracts (only it reaches the live tab); main writes the file.
+    clip: (
+      nodeId: string,
+      payload: { title?: string; url: string; markdown: string }
+    ): Promise<boolean> => ipcRenderer.invoke('link:clip', nodeId, payload),
+    // Remove a link's clip — on unpin or delete.
+    unclip: (nodeId: string): Promise<void> => ipcRenderer.invoke('link:unclip', nodeId)
   },
   thread: {
     send: (args: ThreadSendArgs): Promise<void> => ipcRenderer.invoke('thread:send', args),

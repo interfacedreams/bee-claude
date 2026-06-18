@@ -30,6 +30,8 @@ import SettingsButton from './SettingsButton'
 import PlacementOverlay from './PlacementOverlay'
 import DeleteChatModal from './DeleteChatModal'
 import ExpandedPanel from './ExpandedPanel'
+import Toast from './Toast'
+import { useToastStore } from '../store/toast'
 import { useCanvasStore, NODE_W, isChat, isNote, isFile, isLink } from '../store/canvas'
 import type { CanvasNode } from '../store/canvas'
 import type { ChosenFile } from '../../../shared/types'
@@ -44,6 +46,23 @@ const nodeTypes: NodeTypes = {
   link: LinkNodeView
 }
 const edgeTypes: EdgeTypes = { fork: ForkEdge, context: ContextEdge, derive: DeriveEdge }
+
+// What the file picker / drop vetting actually accepts (mirrors FILE_MIME in
+// the main process). Used only to phrase the rejection toast.
+const SUPPORTED_DROP_EXT = ['png', 'jpg', 'jpeg', 'pdf']
+const extOf = (name: string): string => name.slice(name.lastIndexOf('.') + 1).toLowerCase()
+
+/** Toast copy for files the drop vetting refused — leads with the unsupported
+ *  type (HEIC and friends) and points at what does work. */
+function dropRejectMessage(rejected: File[]): string {
+  const bad = rejected.map((f) => extOf(f.name)).filter((e) => e && !SUPPORTED_DROP_EXT.includes(e))
+  const uniq = [...new Set(bad)]
+  if (uniq.length === 1) {
+    return `.${uniq[0].toUpperCase()} isn't supported — images must be PNG or JPEG.`
+  }
+  if (rejected.length === 1) return `Couldn't add “${rejected[0].name}” — images must be PNG or JPEG.`
+  return `Couldn't add those files — images must be PNG or JPEG.`
+}
 
 /** The pasted text as an http(s) URL — null unless the whole paste is one
  *  link (a scheme'd URL, or a bare domain like nuwapen.com/about). */
@@ -320,16 +339,20 @@ function CanvasInner(): React.JSX.Element {
       // the header. addDroppedFiles centers each node's width on the point.
       const p = screenToFlowPosition({ x: e.clientX, y: e.clientY })
       void (async () => {
-        const picked = (
-          await Promise.all(
-            files.map((f) => {
-              // '' for path-less files (e.g. an image dragged from a browser)
-              const path = window.api.file.pathFor(f)
-              return path ? window.api.file.fromPath(path) : null
-            })
-          )
-        ).filter((c): c is ChosenFile => c !== null)
+        const results = await Promise.all(
+          files.map(async (f) => {
+            // '' for path-less files (e.g. an image dragged from a browser)
+            const path = window.api.file.pathFor(f)
+            return path ? await window.api.file.fromPath(path) : null
+          })
+        )
+        const picked = results.filter((c): c is ChosenFile => c !== null)
         if (picked.length > 0) await addDroppedFiles({ x: p.x, y: p.y - 24 }, picked)
+        // Anything the main process refused (HEIC and other unsupported types,
+        // oversized PDFs, unreadable files) comes back null — surface it as a
+        // swooping banner rather than swallowing the drop in silence.
+        const rejected = files.filter((_, i) => results[i] === null)
+        if (rejected.length > 0) useToastStore.getState().show(dropRejectMessage(rejected))
       })()
     },
     [screenToFlowPosition, addDroppedFiles]
@@ -530,6 +553,9 @@ function CanvasInner(): React.JSX.Element {
 
       {/* the right-docked reading panel — the canvas shrinks beside it */}
       <ExpandedPanel />
+
+      {/* swooping error banner (unsupported drops, etc.) */}
+      <Toast />
     </div>
   )
 }

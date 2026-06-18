@@ -6,7 +6,7 @@ import {
   ResizeControlVariant,
   type NodeProps
 } from '@xyflow/react'
-import { Minus, Trash2 } from 'lucide-react'
+import { Brain, Minus, Trash2 } from 'lucide-react'
 import { useCanvasStore, MAX_NODE_H, type LinkNode } from '../store/canvas'
 import { paletteFor } from '../lib/palette'
 import { usePanel } from '../lib/usePanel'
@@ -34,6 +34,7 @@ const RESIZE_LIMITS = { minWidth: 280, minHeight: 160, maxHeight: MAX_NODE_H }
 function LinkNodeView({ id, data, selected }: NodeProps<LinkNode>): React.JSX.Element {
   const setTitle = useCanvasStore((s) => s.setTitle)
   const requestDelete = useCanvasStore((s) => s.requestDelete)
+  const togglePin = useCanvasStore((s) => s.togglePin)
   const toggleMinimize = useCanvasStore((s) => s.toggleMinimize)
   const setCtxConnectSource = useCanvasStore((s) => s.setCtxConnectSource)
   const armed = useCanvasStore((s) => s.ctxConnectSource === id)
@@ -102,7 +103,11 @@ function LinkNodeView({ id, data, selected }: NodeProps<LinkNode>): React.JSX.El
         position={Position.Right}
         isConnectable
         isConnectableEnd={false}
-        title="Drag — or tap, then click a chat — to attach this page as context"
+        title={
+          data.pinned
+            ? 'In memory — its clipped page is pulled in on demand. Drag to also wire it into a chat.'
+            : 'Drag — or tap, then click a chat — to attach this page as context'
+        }
         onClick={(e) => {
           // keep the tap from reaching the overlay's window listener,
           // which treats any stray click as cancel
@@ -110,8 +115,25 @@ function LinkNodeView({ id, data, selected }: NodeProps<LinkNode>): React.JSX.El
           setCtxConnectSource(armed ? null : id)
         }}
         className={`ctx-handle ${armed ? 'ctx-armed' : ''}`}
-        style={ctxHandleStyle(palette.accent, 'right', 'square')}
-      />
+        style={{
+          ...ctxHandleStyle(palette.accent, 'right', 'square'),
+          // In memory: a white brain rides inside the knob (mirrors notes/files),
+          // faded to read as "optional — already in memory".
+          ...(data.pinned
+            ? {
+                width: 28,
+                height: 28,
+                right: -22,
+                opacity: 0.85,
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center'
+              }
+            : {})
+        }}
+      >
+        {data.pinned && <Brain className="pointer-events-none h-4 w-4 text-white" />}
+      </Handle>
 
       {!data.minimized && !docked && data.url && (
         <>
@@ -225,6 +247,24 @@ function LinkNodeView({ id, data, selected }: NodeProps<LinkNode>): React.JSX.El
               onEdit={() => setEditingTitle(true)}
               renameHint="Rename this tab"
             />
+          )}
+          {!data.minimized && !docked && data.url && (
+            <button
+              type="button"
+              onClick={() => togglePin(id)}
+              title={
+                data.pinned
+                  ? 'In project memory — every new chat sees this page'
+                  : 'Add this page to project memory'
+              }
+              className={`nodrag flex h-9 w-9 shrink-0 cursor-pointer items-center justify-center rounded-lg transition-colors ${
+                data.pinned
+                  ? 'bg-(--np-accent) text-white'
+                  : 'bg-(--np-chip) text-(--np-deep) hover:bg-(--np-accent)'
+              }`}
+            >
+              <Brain className="h-[25px] w-[25px]" />
+            </button>
           )}
           {!data.minimized && !docked && <TransformButton id={id} />}
           <button

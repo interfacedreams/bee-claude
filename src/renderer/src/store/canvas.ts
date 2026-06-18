@@ -19,6 +19,7 @@ import type {
 } from '../../../shared/types'
 import { contrastColorId, nextColorId } from '../lib/palette'
 import { extractPageMarkdown } from '../lib/pageText'
+import { useToastStore } from './toast'
 
 export const NODE_W = 600
 export const MAX_NODE_H = 1280
@@ -123,6 +124,8 @@ export interface FileData {
   kind?: FileKind // omitted means 'image' (nodes that predate PDFs)
   file?: string // file path relative to the folder root; set once file:attach resolves
   dataUrl?: string // image bytes; undefined renders a placeholder (PDFs never carry one)
+  pinned?: boolean // in the project memory index (MEMORY.md); agent Reads it on demand
+  description?: string // 1-3 sentence index blurb (vision Haiku, cached); see NoteData
   minimized: boolean
   savedHeight?: number
   updatedAt?: number // never stamped (files don't sit in the sidebar); declared so CanvasNode data reads uniformly
@@ -133,6 +136,8 @@ export interface LinkData {
   title: string
   color?: string
   url?: string // empty until the user commits one — the body shows the URL input
+  pinned?: boolean // in memory: its page is clipped to .canvas/clips/<id>.md
+  description?: string // 1-3 sentence index blurb of the clipped page (cached)
   minimized: boolean
   savedHeight?: number
   updatedAt?: number // never stamped (links don't sit in the sidebar); declared so CanvasNode data reads uniformly
@@ -422,6 +427,7 @@ interface CanvasState {
   init: () => Promise<Viewport | null>
   chooseFolder: () => Promise<Viewport | null>
   selectFolder: (path: string) => Promise<Viewport | null>
+  createFolder: (name: string, parent?: string) => Promise<Viewport | null>
   onNodesChange: (changes: NodeChange<CanvasNode>[]) => void
   setViewport: (vp: Viewport) => void
   addNodeAt: (position: { x: number; y: number }) => ChatNode
@@ -451,8 +457,9 @@ interface CanvasState {
   // or bring one back to the front (snapshots current first, never destructive).
   setViewVersion: (id: string, index: number | undefined) => void
   restoreVersion: (id: string, index: number) => Promise<void>
-  // Pin/unpin a note into the project memory index. Pinning kicks off a
-  // description if the note has content and none yet.
+  // Pin/unpin a resource into the project memory index. Notes and files just
+  // flip the flag; a link clips its live page to a hidden markdown file first.
+  // Pinning kicks off a 1-3 sentence index description.
   togglePin: (id: string) => void
   // Debounced regeneration of a pinned note's 1-3 sentence index description
   // (Haiku one-shot). A no-op for unpinned or empty notes.
@@ -541,9 +548,19 @@ export const useCanvasStore = create<CanvasState>((set, get) => {
                 ...(n.data.system ? { system: n.data.system } : {})
               }
             : isFile(n)
-              ? { kind: 'file' as const, ...(n.data.file ? { file: n.data.file } : {}) }
+              ? {
+                  kind: 'file' as const,
+                  ...(n.data.file ? { file: n.data.file } : {}),
+                  ...(n.data.pinned ? { pinned: true } : {}),
+                  ...(n.data.description ? { description: n.data.description } : {})
+                }
               : isLink(n)
-                ? { kind: 'link' as const, ...(n.data.url ? { url: n.data.url } : {}) }
+                ? {
+                    kind: 'link' as const,
+                    ...(n.data.url ? { url: n.data.url } : {}),
+                    ...(n.data.pinned ? { pinned: true } : {}),
+                    ...(n.data.description ? { description: n.data.description } : {})
+                  }
                 : n.data.kind === 'research'
                   ? { kind: 'research' as const }
                   : {}),
@@ -901,7 +918,8 @@ export const useCanvasStore = create<CanvasState>((set, get) => {
       for (const nodeId of doomed) {
         const node = byId.get(nodeId)
         if (node && isNote(node)) void window.api.note.delete(nodeId)
-        else if (node && (isFile(node) || isLink(node))) {
+        else if (node && isLink(node)) void window.api.link.unclip(nodeId) // drop its clip, if any
+        else if (node && isFile(node)) {
           // nothing on disk to clean up — the node is just a pin
         } else void window.api.canvas.deleteThread(nodeId)
       }
@@ -937,6 +955,12 @@ export const useCanvasStore = create<CanvasState>((set, get) => {
       if (path === get().folder?.current || anyStreaming()) return null
       await flushSave()
       return switchFolder(await window.api.folder.select(path))
+    },
+
+    createFolder: async (name, parent) => {
+      if (anyStreaming()) return null
+      await flushSave()
+      return switchFolder(await window.api.folder.create(name, parent))
     },
 
     persistSoon: persist,
@@ -1132,14 +1156,59 @@ export const useCanvasStore = create<CanvasState>((set, get) => {
     togglePin: (id) => {
       if (isClaudeMd(id)) return // already always-in-context; not a memory pin
       const node = get().nodes.find((n) => n.id === id)
-      if (!node || !isNote(node)) return
+      if (!node) return
+
+      // Links can't be Read in place — they're a live tab, not a file. Joining
+      // memory clips the rendered page (Defuddle, the same extractor a chat uses)
+      // to a hidden markdown file the agent Reads on demand. The extraction lives
+      // here in the renderer because only it can reach the tab's <webview> guest.
+      if (isLink(node)) {
+        if (node.data.pinned) {
+          patchData(id, { pinned: false, description: undefined })
+          persist()
+          void window.api.link.unclip(id)
+          return
+        }
+        const url = node.data.url
+        if (!url) return
+        void (async () => {
+          const markdown = await extractPageMarkdown(id, url)
+          if (!markdown) {
+            // No live guest (tab minimized/hung) or the page wouldn't extract.
+            useToastStore.getState().show('Open this page in its tab, then add it to memory')
+            return
+          }
+          const ok = await window.api.link.clip(id, { title: node.data.title, url, markdown })
+          if (!ok) {
+            useToastStore.getState().show('Couldn’t save this page to memory')
+            return
+          }
+          patchData(id, { pinned: true })
+          persist() // pin state + the regenerated MEMORY.md ride the canvas save
+          // Describe from the clip we just took (text summarizer, like a note).
+          const description = await window.api.note.describe(markdown)
+          if (!description) return
+          const cur = get().nodes.find((n) => n.id === id)
+          if (cur && isLink(cur) && cur.data.pinned) {
+            patchData(id, { description })
+            persist()
+          }
+        })()
+        return
+      }
+
+      // Notes and files (images/PDFs) are already on disk — just flip the flag.
+      if (!isNote(node) && !isFile(node)) return
       const pinned = !node.data.pinned
       patchData(id, { pinned })
       persist() // pin state + the regenerated MEMORY.md ride the canvas save
-      // First pin of a note that already has content but no blurb: describe it
-      // now so the index line isn't bare.
-      if (pinned && node.data.content.trim() && !node.data.description) {
-        get().scheduleDescribe(id)
+      // First pin of a resource that has content but no blurb: describe it now
+      // so the index line isn't bare. Notes describe their text; files their
+      // pixels/pages.
+      if (pinned && !node.data.description) {
+        if (isNote(node) ? node.data.content.trim() : node.data.file) {
+          get().scheduleDescribe(id)
+        }
       }
     },
 
@@ -1151,18 +1220,25 @@ export const useCanvasStore = create<CanvasState>((set, get) => {
         setTimeout(() => {
           describeTimers.delete(id)
           const node = get().nodes.find((n) => n.id === id)
-          if (!node || !isNote(node) || !node.data.pinned) return
-          const content = node.data.content.trim()
-          if (!content) return
-          void window.api.note.describe(content).then((description) => {
+          if (!node || !node.data.pinned) return
+          // The describe call differs by kind (text vs. vision), but the
+          // commit is the same: cache the blurb if the node is still pinned.
+          const commit = (description: string | null): void => {
             if (!description) return
             const cur = get().nodes.find((n) => n.id === id)
-            // The note may have been unpinned or deleted while Haiku ran.
-            if (cur && isNote(cur) && cur.data.pinned) {
+            // The node may have been unpinned or deleted while Haiku ran.
+            if (cur && (isNote(cur) || isFile(cur)) && cur.data.pinned) {
               patchData(id, { description })
               persist()
             }
-          })
+          }
+          if (isNote(node)) {
+            const content = node.data.content.trim()
+            if (!content) return
+            void window.api.note.describe(content).then(commit)
+          } else if (isFile(node) && node.data.file) {
+            void window.api.file.describe(node.data.file).then(commit)
+          }
         }, 1500)
       )
     },
@@ -1691,6 +1767,8 @@ export const useCanvasStore = create<CanvasState>((set, get) => {
                       : ('image' as const),
                     file: p.file,
                     dataUrl: p.dataUrl,
+                    ...(p.pinned ? { pinned: true } : {}),
+                    ...(p.description ? { description: p.description } : {}),
                     minimized: p.minimized ?? false,
                     updatedAt: p.updatedAt,
                     ...(p.minimized && p.height != null ? { savedHeight: p.height } : {})
@@ -1704,6 +1782,8 @@ export const useCanvasStore = create<CanvasState>((set, get) => {
                 title: p.title,
                 color: p.color,
                 url: p.url,
+                ...(p.pinned ? { pinned: true } : {}),
+                ...(p.description ? { description: p.description } : {}),
                 minimized: p.minimized ?? false,
                 updatedAt: p.updatedAt,
                 ...(p.minimized && p.height != null ? { savedHeight: p.height } : {})

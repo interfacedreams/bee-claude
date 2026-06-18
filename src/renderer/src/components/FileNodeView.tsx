@@ -6,7 +6,7 @@ import {
   ResizeControlVariant,
   type NodeProps
 } from '@xyflow/react'
-import { Minus, Trash2 } from 'lucide-react'
+import { Brain, Minus, Trash2 } from 'lucide-react'
 import { useCanvasStore, MAX_NODE_H, type FileNode } from '../store/canvas'
 import { paletteFor } from '../lib/palette'
 import { usePanel } from '../lib/usePanel'
@@ -37,6 +37,7 @@ const RESIZE_LIMITS = { minWidth: 240, minHeight: 120, maxHeight: MAX_NODE_H }
 function FileNodeView({ id, data, selected }: NodeProps<FileNode>): React.JSX.Element {
   const setTitle = useCanvasStore((s) => s.setTitle)
   const requestDelete = useCanvasStore((s) => s.requestDelete)
+  const togglePin = useCanvasStore((s) => s.togglePin)
   const toggleMinimize = useCanvasStore((s) => s.toggleMinimize)
   const setCtxConnectSource = useCanvasStore((s) => s.setCtxConnectSource)
   const armed = useCanvasStore((s) => s.ctxConnectSource === id)
@@ -100,7 +101,11 @@ function FileNodeView({ id, data, selected }: NodeProps<FileNode>): React.JSX.El
         position={Position.Right}
         isConnectable
         isConnectableEnd={false}
-        title="Drag — or tap, then click a chat — to attach this file as context"
+        title={
+          data.pinned
+            ? 'In memory — the agent pulls this in on demand. Drag to also wire it into a chat.'
+            : 'Drag — or tap, then click a chat — to attach this file as context'
+        }
         onClick={(e) => {
           // keep the tap from reaching the overlay's window listener,
           // which treats any stray click as cancel
@@ -108,8 +113,26 @@ function FileNodeView({ id, data, selected }: NodeProps<FileNode>): React.JSX.El
           setCtxConnectSource(armed ? null : id)
         }}
         className={`ctx-handle ${armed ? 'ctx-armed' : ''}`}
-        style={ctxHandleStyle(palette.accent, 'right', 'square')}
-      />
+        style={{
+          ...ctxHandleStyle(palette.accent, 'right', 'square'),
+          // In memory: a white brain rides inside the knob (mirrors notes and
+          // the header toggle's active state), slightly faded to read as
+          // "optional — already in memory".
+          ...(data.pinned
+            ? {
+                width: 28,
+                height: 28,
+                right: -22,
+                opacity: 0.85,
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center'
+              }
+            : {})
+        }}
+      >
+        {data.pinned && <Brain className="pointer-events-none h-4 w-4 text-white" />}
+      </Handle>
 
       {!data.minimized && (
         <>
@@ -202,6 +225,24 @@ function FileNodeView({ id, data, selected }: NodeProps<FileNode>): React.JSX.El
               onEdit={() => setEditingTitle(true)}
               renameHint={isPdf ? 'Rename this PDF' : 'Rename this image'}
             />
+          )}
+          {!data.minimized && (
+            <button
+              type="button"
+              onClick={() => togglePin(id)}
+              title={
+                data.pinned
+                  ? 'In project memory — every new chat sees this file'
+                  : 'Add to project memory'
+              }
+              className={`nodrag flex h-9 w-9 shrink-0 cursor-pointer items-center justify-center rounded-lg transition-colors ${
+                data.pinned
+                  ? 'bg-(--np-accent) text-white'
+                  : 'bg-(--np-chip) text-(--np-deep) hover:bg-(--np-accent)'
+              }`}
+            >
+              <Brain className="h-[25px] w-[25px]" />
+            </button>
           )}
           {!data.minimized && <TransformButton id={id} />}
           <button

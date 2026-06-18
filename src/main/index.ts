@@ -56,7 +56,12 @@ let folderRoot: string | null = null
 interface FolderSettings {
   current: string | null
   recents: string[]
+  lastCreateParent?: string // sticky parent for "New Folder"; defaults to ~/Documents/Bee Claude
 }
+
+// Where new folders land by default — a visible, user-owned spot (Finder, backups)
+// rather than the hidden userData dir. The parent becomes sticky after the first create.
+const defaultCreateParent = (): string => join(app.getPath('documents'), 'Bee Claude')
 
 const settingsFile = (): string => join(app.getPath('userData'), 'folders.json')
 // Pre-rename installs kept their state in repos.json — read it as a fallback.
@@ -96,6 +101,15 @@ const legacyNoteFileFor = (root: string, nodeId: string): string =>
   join(noteMetaDirFor(root), `${nodeId}.md`)
 const noteVersionsFileFor = (root: string, nodeId: string): string =>
   join(noteMetaDirFor(root), `${nodeId}.versions.json`)
+// A pinned link's clipped page: the Defuddle markdown captured from the live tab
+// at pin time, kept as hidden metadata (keyed by node id, not a root note) so it
+// doesn't clutter the user's own files. The agent Reads it on demand through its
+// MEMORY.md line; re-clipping overwrites it.
+const clipsDirFor = (root: string): string => join(root, '.canvas', 'clips')
+const clipFileFor = (root: string, nodeId: string): string =>
+  join(clipsDirFor(root), `${nodeId}.md`)
+// Its MEMORY.md link target — relative to root, posix-style for the markdown.
+const clipRelFor = (nodeId: string): string => `.canvas/clips/${nodeId}.md`
 
 // Node ids come from the renderer over IPC — keep them path-segment safe.
 const isSafeNodeId = (nodeId: string): boolean => /^[\w-]+$/.test(nodeId)
@@ -480,7 +494,7 @@ async function buildFolderState(): Promise<FolderState> {
       recents.push({ path, name: basename(path), chatCount })
     }
   }
-  return { current: folderRoot, recents }
+  return { current: folderRoot, recents, createParent: settings.lastCreateParent ?? defaultCreateParent() }
 }
 
 async function setCurrentFolder(root: string): Promise<FolderState> {
@@ -512,6 +526,49 @@ function registerFolderIpc(): void {
   ipcMain.handle('folder:select', async (_event, path: string): Promise<FolderState> => {
     if (await dirExists(path)) return setCurrentFolder(path)
     return buildFolderState() // gone from disk — the rebuilt state simply drops it
+  })
+
+  // Create a fresh folder under `parent` (defaulting to the sticky create parent),
+  // remember that parent for next time, and open the new folder as the current one.
+  ipcMain.handle(
+    'folder:create',
+    async (_event, name: string, parent?: string): Promise<FolderState | null> => {
+      const dir = parent?.trim() || defaultCreateParent()
+      await fs.mkdir(dir, { recursive: true })
+
+      // First free name under `dir` — "Foo", "Foo 2", … — same scheme as note
+      // titles (allocateNoteFile), checked against the filesystem so we never
+      // clobber an existing folder.
+      const base = sanitizeTitle(name) || 'Untitled'
+      let target: string
+      for (let n = 1; ; n++) {
+        target = join(dir, n === 1 ? base : `${base} ${n}`)
+        if (!(await dirExists(target))) break
+      }
+      await fs.mkdir(target)
+
+      const settings = await readSettings()
+      settings.lastCreateParent = dir
+      await fs.writeFile(settingsFile(), JSON.stringify(settings, null, 2))
+      return setCurrentFolder(target)
+    }
+  )
+
+  // Let the user repoint where new folders get created (the picked dir sticks).
+  ipcMain.handle('folder:pickCreateParent', async (event): Promise<string | null> => {
+    const win = BrowserWindow.fromWebContents(event.sender)
+    const options = {
+      title: 'Choose where new folders are created',
+      properties: ['openDirectory' as const, 'createDirectory' as const]
+    }
+    const res = win
+      ? await dialog.showOpenDialog(win, options)
+      : await dialog.showOpenDialog(options)
+    if (res.canceled || res.filePaths.length === 0) return null
+    const settings = await readSettings()
+    settings.lastCreateParent = res.filePaths[0]
+    await fs.writeFile(settingsFile(), JSON.stringify(settings, null, 2))
+    return res.filePaths[0]
   })
 }
 
@@ -1079,6 +1136,68 @@ function registerThreadIpc(): void {
     return null
   })
 
+  // A pinned image or PDF's index description: the vision counterpart of
+  // note:describe. A one-shot Haiku turn that looks at the file itself (handed
+  // in as an image/document block) and returns a 1-3 sentence blurb. Lazy —
+  // only runs when a file is added to memory — and the result is cached in
+  // canvas.json, so a reload never re-describes.
+  ipcMain.handle('file:describe', async (_event, rel: string): Promise<string | null> => {
+    const root = folderRoot
+    if (!root || typeof rel !== 'string' || !isSafeFileRel(rel)) return null
+    const mime = fileMimeFor(rel)
+    if (!mime) return null
+    try {
+      const buf = await fs.readFile(join(root, rel))
+      if (mime === 'application/pdf' && buf.byteLength > MAX_PDF_BYTES) return null
+      const data = buf.toString('base64')
+      const isPdf = mime === 'application/pdf'
+      const block = isPdf
+        ? { type: 'document' as const, source: { type: 'base64' as const, media_type: mime, data } }
+        : { type: 'image' as const, source: { type: 'base64' as const, media_type: mime, data } }
+      const turn = query({
+        prompt: (async function* (): AsyncGenerator<SDKUserMessage> {
+          yield {
+            type: 'user',
+            message: {
+              role: 'user',
+              content: [
+                block,
+                {
+                  type: 'text',
+                  text:
+                    `Summarize what this ${isPdf ? 'PDF' : 'image'} contains in 1-3 plain ` +
+                    'sentences, for an index that helps decide when to open it. Describe the ' +
+                    'subject matter, not the formatting. No preamble, no quotes — reply with ' +
+                    'the description only.'
+                }
+              ]
+            },
+            parent_tool_use_id: null,
+            session_id: '' // stamped by the SDK
+          }
+        })(),
+        options: {
+          cwd: root,
+          model: TITLE_MODEL,
+          maxTurns: 1,
+          tools: [], // vision-only — no tools, no permission round-trips
+          systemPrompt:
+            'You write terse, factual index descriptions. Reply with only the description.'
+        }
+      })
+      for await (const msg of turn) {
+        if (msg.type === 'result') {
+          if (msg.subtype !== 'success') return null
+          const desc = msg.result.trim().replace(/\s+/g, ' ').slice(0, 320).trim()
+          return desc || null
+        }
+      }
+    } catch {
+      // a failed description is just no description — the index line stays bare
+    }
+    return null
+  })
+
   ipcMain.on('thread:permission', (_event, { requestId, allow }: PermissionReply) => {
     pendingPermissions.get(requestId)?.resolve(allow)
   })
@@ -1341,14 +1460,16 @@ function registerThreadIpc(): void {
         // next message. One cache miss on the prefix when it changes; cheap.
         const memoryIndex = notePath ? '' : await readTextIfExists(memoryFileFor(root))
         const memoryAppend = memoryIndex.trim()
-          ? 'PROJECT MEMORY — the user has pinned notes that make up this project’s ' +
-            'durable context. The index below lists each note with a short description and ' +
-            'its file path (relative to the project root). When a note’s description is ' +
-            'relevant to the task, read that file with the Read tool — you need not read them ' +
-            'all. If the conversation establishes that a pinned note has become outdated or ' +
-            'wrong, update that note’s file with the Edit tool and briefly tell the user ' +
-            'what you changed. Never edit MEMORY.md itself — the app regenerates it from the ' +
-            'pinned notes.\n\n' +
+          ? 'PROJECT MEMORY — the user has pinned resources (notes, images, PDFs and clipped ' +
+            'web pages) that make up this project’s durable context. The index below lists ' +
+            'each one with a ' +
+            'short description and its file path (relative to the project root). When an ' +
+            'entry’s description is relevant to the task, read that file with the Read tool ' +
+            '(it reads images and PDFs as well as text) — you need not read them all. If the ' +
+            'conversation establishes that a pinned note has become outdated or wrong, update ' +
+            'that note’s file with the Edit tool and briefly tell the user what you changed. ' +
+            'Never edit MEMORY.md itself — the app regenerates it from the pinned resources.' +
+            '\n\n' +
             memoryIndex.trim()
           : ''
         const systemAppend = [
@@ -1769,6 +1890,43 @@ function registerNoteIpc(): void {
       }
     }
   })
+
+  // Save a pinned link's clipped page. The renderer does the extraction (only it
+  // can reach the live <webview> guest where Defuddle runs), then hands the
+  // markdown here to write under .canvas/clips. A small provenance header makes
+  // the file self-explanatory when the agent — or the user — opens it.
+  ipcMain.handle(
+    'link:clip',
+    async (
+      _event,
+      nodeId: string,
+      payload: { title?: string; url: string; markdown: string }
+    ): Promise<boolean> => {
+      const root = folderRoot
+      if (!root || !isSafeNodeId(nodeId)) return false
+      const { title, url, markdown } = payload ?? {}
+      if (typeof url !== 'string' || typeof markdown !== 'string' || !markdown.trim()) return false
+      try {
+        await fs.mkdir(clipsDirFor(root), { recursive: true })
+        const header = `# ${title?.trim() || url}\n\n> Clipped from ${url}\n\n---\n\n`
+        await fs.writeFile(clipFileFor(root, nodeId), header + markdown.trim() + '\n')
+        return true
+      } catch {
+        return false
+      }
+    }
+  )
+
+  // Drop a link's clip — on unpin, or when the node is deleted.
+  ipcMain.handle('link:unclip', async (_event, nodeId: string): Promise<void> => {
+    const root = folderRoot
+    if (!root || !isSafeNodeId(nodeId)) return
+    try {
+      await fs.unlink(clipFileFor(root, nodeId))
+    } catch {
+      // never clipped
+    }
+  })
 }
 
 // Layout/metadata only — transcripts and note bodies live in their own files.
@@ -1799,16 +1957,32 @@ async function writeCanvasFile(root: string, doc: CanvasDoc): Promise<void> {
 }
 
 // --- Project memory index (MEMORY.md) -----------------------------------
-// One markdown line per pinned note: a titled link to its file plus the
-// cached description. This is the text injected into every chat's system
-// prompt and shown in the Memory legend — the app owns it end to end.
+// One markdown line per pinned resource — a note, image or PDF: a titled link
+// to its file plus the cached description. This is the text injected into every
+// chat's system prompt and shown in the Memory legend — the app owns it end to
+// end. The agent opens whichever files it needs with the Read tool, which reads
+// images and PDFs as natively as markdown, so no resource kind needs special
+// injection — it's all just file links.
 
 function buildMemoryIndex(doc: CanvasDoc): string {
   const lines = doc.nodes.flatMap((node) => {
-    if (node.kind !== 'note' || !node.pinned) return []
-    const file = noteFiles.get(node.id)
+    if (!node.pinned) return []
+    // Notes are addressed through the id→filename map (their file is retitled
+    // independently); files carry their own relative path; links point at the
+    // hidden clip captured when they were pinned.
+    const file =
+      node.kind === 'note'
+        ? noteFiles.get(node.id)
+        : node.kind === 'file'
+          ? node.file
+          : node.kind === 'link'
+            ? clipRelFor(node.id)
+            : undefined
     if (!file) return []
-    const title = node.title?.trim() || file.replace(/\.md$/, '')
+    const title =
+      node.title?.trim() ||
+      (node.kind === 'link' ? node.url : undefined) ||
+      file.replace(/\.[^.]+$/, '')
     const desc = node.description?.trim()
     return [`- [${title}](${file})${desc ? ` — ${desc}` : ''}`]
   })
@@ -1914,10 +2088,9 @@ function registerCanvasIpc(): void {
       try {
         doc = JSON.parse(await fs.readFile(canvasFileFor(root), 'utf8'))
       } catch {
-        // No canvas.json yet (a fresh folder, or a subfolder opened for the
-        // first time) — start empty; the CLAUDE.md inject below and the
-        // auto-placement pass fill it in. Not persisted here, so merely visiting
-        // a folder never writes to it or marks it touched.
+        // No canvas.json yet (a fresh folder) — start empty; the CLAUDE.md
+        // inject below and the auto-placement pass fill it in. Not persisted
+        // here, so opening a folder never writes to it on its own.
         doc = { version: 1, nodes: [], edges: [], viewport: { x: 0, y: 0, zoom: 1 } }
       }
       if (!doc.nodes.some((n) => n.id === CLAUDE_MD_ID)) {

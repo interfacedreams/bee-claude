@@ -1,7 +1,17 @@
 import { useMemo, useState } from 'react'
 import { useReactFlow } from '@xyflow/react'
-import { Brain, FileCode2, Info, Minus, Plus, X } from 'lucide-react'
-import { useCanvasStore, isNote, type CanvasNode } from '../store/canvas'
+import {
+  Brain,
+  FileCode2,
+  FileText,
+  Globe,
+  Image as ImageIcon,
+  Info,
+  Minus,
+  Plus,
+  X
+} from 'lucide-react'
+import { useCanvasStore, isNote, isFile, isLink, type CanvasNode } from '../store/canvas'
 import { paletteFor } from '../lib/palette'
 import { usePersistedCollapse } from '../lib/usePersistedCollapse'
 import Tooltip from './Tooltip'
@@ -32,7 +42,12 @@ export default function MemoryLegend(): React.JSX.Element | null {
   const [collapsed, setCollapsed] = usePersistedCollapse('memory')
   const [explain, setExplain] = useState(false)
 
-  const pinned = useMemo(() => nodes.filter((n) => isNote(n) && n.data.pinned), [nodes])
+  // Every pinned resource — notes, files (images/PDFs) and clipped web pages —
+  // makes up the memory index; they share this list in canvas order.
+  const pinned = useMemo(
+    () => nodes.filter((n) => (isNote(n) || isFile(n) || isLink(n)) && n.data.pinned),
+    [nodes]
+  )
   // The always-present CLAUDE.md node — surfaced here as a jump link so the
   // project's instructions are reachable from the same "what the agent sees" panel.
   const claudeMd = useMemo(
@@ -122,25 +137,43 @@ export default function MemoryLegend(): React.JSX.Element | null {
         {/* Pinned notes — capped at ~5 rows tall, then scrolls. Each row is
             ~32px (py-1.5 + 13px line), so 5 rows ≈ 160px. */}
         <div className="min-h-0 max-h-[160px] overflow-y-auto">
-          {pinned.map((n) => (
-            <button
-              key={n.id}
-              type="button"
-              onClick={() => focusNode(n)}
-              title={n.data.title || 'Untitled note'}
-              className={`flex w-full cursor-pointer items-center gap-2 rounded-[7px] px-2.5 py-1.5 text-left transition-colors hover:bg-neutral-100 ${
-                n.selected ? 'bg-neutral-100' : ''
-              }`}
-            >
-              <Brain
-                className="h-3.5 w-3.5 shrink-0"
-                style={{ color: paletteFor(n.data.color).accent }}
-              />
-              <span className="min-w-0 flex-1 truncate text-[13px] text-neutral-800">
-                {n.data.title || <span className="text-neutral-400 italic">Untitled note</span>}
-              </span>
-            </button>
-          ))}
+          {pinned.map((n) => {
+            // Icon by kind so the list reads at a glance: brain for a note,
+            // picture for an image, document for a PDF, globe for a web page.
+            const Icon = isLink(n)
+              ? Globe
+              : isFile(n)
+                ? n.data.kind === 'pdf'
+                  ? FileText
+                  : ImageIcon
+                : Brain
+            const untitled = isLink(n)
+              ? 'Untitled tab'
+              : isFile(n)
+                ? n.data.kind === 'pdf'
+                  ? 'Untitled PDF'
+                  : 'Untitled image'
+                : 'Untitled note'
+            return (
+              <button
+                key={n.id}
+                type="button"
+                onClick={() => focusNode(n)}
+                title={n.data.title || untitled}
+                className={`flex w-full cursor-pointer items-center gap-2 rounded-[7px] px-2.5 py-1.5 text-left transition-colors hover:bg-neutral-100 ${
+                  n.selected ? 'bg-neutral-100' : ''
+                }`}
+              >
+                <Icon
+                  className="h-3.5 w-3.5 shrink-0"
+                  style={{ color: paletteFor(n.data.color).accent }}
+                />
+                <span className="min-w-0 flex-1 truncate text-[13px] text-neutral-800">
+                  {n.data.title || <span className="text-neutral-400 italic">{untitled}</span>}
+                </span>
+              </button>
+            )
+          })}
         </div>
       </div>
     </aside>
@@ -180,10 +213,14 @@ function MemoryExplainer({ onClose }: { onClose: () => void }): React.JSX.Elemen
         </div>
         <div className="p-4">
           <p className="text-[13px] leading-relaxed text-neutral-700">
-            Add a note to memory with the brain icon on its header. Remembered notes are listed in
-            a <code className="font-mono">MEMORY.md</code> index handed to every new chat — a table
-            of contents, not the full text. The agent always knows the notes exist and opens the
-            ones it needs on demand.
+            Claude can already read any file in this folder on its own — but with many files it
+            can&rsquo;t tell which ones matter, or what&rsquo;s inside, without opening each. Memory
+            is a curated table of contents that solves both. Add a note, image, PDF or web page with
+            the brain icon on its header and it gets a line in <code className="font-mono">MEMORY.md</code>,
+            an index handed to every new chat. Each line carries a short description of the
+            contents, so the agent knows your key resources exist, what&rsquo;s in them, and opens
+            the right ones on demand (it reads images and PDFs too). A web page is clipped to text
+            when you add it, so it stays readable after the tab closes.
           </p>
           <pre className="mt-3 overflow-x-auto rounded-[6px] bg-[#F7F2DF] px-3 py-2.5 text-[11px] leading-snug text-neutral-700">
             {`# Project memory
@@ -193,8 +230,8 @@ function MemoryExplainer({ onClose }: { onClose: () => void }): React.JSX.Elemen
 - [Roadmap](Roadmap.md) — Q3 priorities.`}
           </pre>
           <p className="mt-3 text-[13px] leading-relaxed text-neutral-700">
-            Each line links the note&rsquo;s file with a one-line description (generated for you).
-            Remove a note from memory and it drops back out.{' '}
+            The description is generated for you. Remove a resource from memory and its line drops
+            back out.{' '}
             <code className="font-mono">CLAUDE.md</code> is different — it&rsquo;s always in context
             in full, no marking needed.
           </p>

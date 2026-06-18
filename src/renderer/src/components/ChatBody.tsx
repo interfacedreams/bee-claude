@@ -98,9 +98,6 @@ const ChatBody = forwardRef<
 
   const textareaRef = useRef<HTMLTextAreaElement>(null)
   const scrollRef = useRef<HTMLDivElement>(null)
-  // Follow new content only while the user is at (or near) the bottom,
-  // so scrolling up to read history never gets yanked back down.
-  const stickToBottom = useRef(true)
 
   useImperativeHandle(ref, () => ({ focusComposer: () => textareaRef.current?.focus() }), [])
 
@@ -109,7 +106,6 @@ const ChatBody = forwardRef<
   const empty = !data || data.messages.length === 0
   const isResearch = data?.kind === 'research'
   const focusDraft = data?.focusDraft === true
-  const messages = data?.messages
 
   // Refocus the composer the moment the assistant finishes in this chat —
   // unless the user has moved on to typing somewhere else (don't steal focus).
@@ -152,25 +148,13 @@ const ChatBody = forwardRef<
   }, [])
 
   // Scrolling the transcript requires focus (the node is selected by clicking
-  // it); otherwise the wheel pans the canvas. Any upward wheel during
-  // streaming releases the auto-follow immediately. The panel is outside the
+  // it); otherwise the wheel pans the canvas. The panel is outside the
   // canvas — it scrolls natively, no routing.
-  useForwardedWheel(scrollRef, !inPanel && !empty, focused, () => {
-    stickToBottom.current = false
-  })
+  useForwardedWheel(scrollRef, !inPanel && !empty, focused)
 
   const handleScroll = (): void => {
-    const el = scrollRef.current
-    if (!el) return
-    const distanceFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight
-    if (distanceFromBottom < 8) stickToBottom.current = true
-    else if (distanceFromBottom > 48) stickToBottom.current = false
     onScrolled?.() // canvas cards re-measure fork-edge anchors
   }
-  useEffect(() => {
-    const el = scrollRef.current
-    if (el && stickToBottom.current) el.scrollTop = el.scrollHeight
-  }, [messages])
 
   if (!data) return null
   const canSend = !streaming && data.draft.trim().length > 0
