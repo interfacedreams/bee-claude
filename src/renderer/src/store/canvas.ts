@@ -149,11 +149,24 @@ export interface LinkData {
   [key: string]: unknown
 }
 
+export interface LabelData {
+  // The label's text lives in `title` — a label has no name apart from its
+  // text, and `title` already round-trips through canvas.json on save/load.
+  title: string
+  color?: string // unused (labels have no palette); declared so CanvasNode data reads uniformly
+  minimized: boolean // labels never minimize; declared so CanvasNode data reads uniformly
+  savedHeight?: number // unused; declared so the union's height handling stays well-typed
+  focusDraft?: boolean // autofocus into edit mode when a freshly spawned label mounts
+  updatedAt?: number // never stamped (labels don't sit in the sidebar); declared for uniformity
+  [key: string]: unknown
+}
+
 export type ChatNode = Node<ChatData, 'chat'>
 export type NoteNode = Node<NoteData, 'note'>
 export type FileNode = Node<FileData, 'file'>
 export type LinkNode = Node<LinkData, 'link'>
-export type CanvasNode = ChatNode | NoteNode | FileNode | LinkNode
+export type LabelNode = Node<LabelData, 'label'>
+export type CanvasNode = ChatNode | NoteNode | FileNode | LinkNode | LabelNode
 
 // How a node is opened out of its card: docked to the right ('panel') or
 // covering the window ('full'). See CanvasState.expanded.
@@ -163,6 +176,7 @@ export const isChat = (n: CanvasNode): n is ChatNode => n.type === 'chat'
 export const isNote = (n: CanvasNode): n is NoteNode => n.type === 'note'
 export const isFile = (n: CanvasNode): n is FileNode => n.type === 'file'
 export const isLink = (n: CanvasNode): n is LinkNode => n.type === 'link'
+export const isLabel = (n: CanvasNode): n is LabelNode => n.type === 'label'
 
 // A file node's frame is explicit (width AND height) from birth so resizing
 // can keep the aspect ratio. The header band is part of that frame.
@@ -295,6 +309,26 @@ function hostTitle(url: string): string {
   }
 }
 
+// A label is born as a small box; the user resizes it to drive wrapping and the
+// auto-fit font. The whole box is its drag surface, so it sets no dragHandle.
+export const LABEL_FRAME = { width: 220, height: 90 }
+export const MIN_LABEL_W = 80
+export const MIN_LABEL_H = 40
+
+function makeLabelNode(
+  position: { x: number; y: number },
+  partial?: Partial<LabelData>
+): LabelNode {
+  return {
+    id: uid(),
+    type: 'label',
+    position,
+    width: LABEL_FRAME.width,
+    height: LABEL_FRAME.height,
+    data: { title: '', minimized: false, ...partial }
+  }
+}
+
 function makeLinkNode(position: { x: number; y: number }, partial?: Partial<LinkData>): LinkNode {
   return {
     id: uid(),
@@ -387,8 +421,8 @@ interface CanvasState {
   pendingDeleteId: string | null
   // Runtime-only: a new-node ghost is stuck to the cursor, waiting for a
   // placement click on the canvas (armed by the toolbar buttons / C / N / F / L).
-  placing: 'chat' | 'note' | 'file' | 'link' | null
-  setPlacing: (kind: 'chat' | 'note' | 'file' | 'link' | null) => void
+  placing: 'chat' | 'note' | 'file' | 'link' | 'label' | null
+  setPlacing: (kind: 'chat' | 'note' | 'file' | 'link' | 'label' | null) => void
   // Runtime-only: a chat placement armed from a resource (its right-edge chat
   // knob, or C while reading a file/link in the half-sheet) carries the resource
   // id here, so the ghost shows a dimmed pending context edge and dropping it
@@ -443,6 +477,7 @@ interface CanvasState {
   addFileAt: (position: { x: number; y: number }) => FileNode | null
   // With a URL (a paste) the tab is born showing the page; without one it
   // opens on the search-or-link input.
+  addLabelAt: (position: { x: number; y: number }) => LabelNode
   addLinkAt: (position: { x: number; y: number }, url?: string) => LinkNode
   // A link clicked inside a chat/note body: materialize a tab next to the
   // source node and open it in the half-sheet panel, so the page reads beside
@@ -572,9 +607,11 @@ export const useCanvasStore = create<CanvasState>((set, get) => {
                     ...(n.data.pinned ? { pinned: true } : {}),
                     ...(n.data.description ? { description: n.data.description } : {})
                   }
-                : n.data.kind === 'research'
-                  ? { kind: 'research' as const }
-                  : {}),
+                : isLabel(n)
+                  ? { kind: 'label' as const }
+                  : n.data.kind === 'research'
+                    ? { kind: 'research' as const }
+                    : {}),
           position: n.position,
           width: n.width ?? NODE_W,
           ...(height != null ? { height } : {}),
@@ -582,7 +619,9 @@ export const useCanvasStore = create<CanvasState>((set, get) => {
           ...(n.data.updatedAt != null ? { updatedAt: n.data.updatedAt } : {}),
           ...(n.data.color ? { color: n.data.color } : {}),
           ...(n.data.minimized ? { minimized: true } : {}),
-          ...(!isFile(n) && !isLink(n) && n.data.sessionId ? { sessionId: n.data.sessionId } : {}),
+          ...(!isFile(n) && !isLink(n) && !isLabel(n) && n.data.sessionId
+            ? { sessionId: n.data.sessionId }
+            : {}),
           ...(isChat(n) && n.data.forkOf ? { forkOf: n.data.forkOf } : {}),
           ...(isChat(n) && n.data.injectedImages?.length
             ? { injectedImages: n.data.injectedImages }
@@ -742,6 +781,43 @@ export const useCanvasStore = create<CanvasState>((set, get) => {
         return content ? { ...l, content } : l
       })
     )
+
+  // Gather every resource wired into a chat and fire the turn over IPC. Shared
+  // by send and retry — the only per-call differences are the prompt text and
+  // whether research mode rides along. `node` is the chat as it was before the
+  // streaming-state update (its session/fork/injected ledger are read here).
+  const dispatchTurn = (node: ChatNode, text: string, opts?: { research?: boolean }): void => {
+    const id = node.id
+    const contextNotes = contextNotesFor(id)
+    const outputNotes = outputNotesFor(id)
+    // Only files the session hasn't seen carry bytes this turn; remember them so
+    // a successful turn marks them injected (a failed turn re-sends on retry).
+    const injected = new Set(node.data.injectedImages ?? [])
+    const contextFiles = contextFilesFor(id).map((f) => ({ ...f, isNew: !injected.has(f.id) }))
+    const newFileIds = contextFiles.filter((f) => f.isNew).map((f) => f.id)
+    if (newFileIds.length > 0) pendingFileInjections.set(id, newFileIds)
+    else pendingFileInjections.delete(id)
+    // Reading the tabs' rendered pages is async — the composer already cleared
+    // and the bubble is streaming-pending, so the await is invisible (and capped
+    // by pageText's extraction timeout).
+    void (async () => {
+      const contextLinks = await withPageContent(contextLinksFor(id))
+      void window.api.thread.send({
+        nodeId: id,
+        text,
+        sessionId: node.data.sessionId,
+        model: get().model,
+        effort: get().effort,
+        // first send of a forked node: fork the parent session at the anchor
+        ...(!node.data.sessionId && node.data.forkOf ? { forkFrom: node.data.forkOf } : {}),
+        ...(opts?.research ? { research: true } : {}),
+        ...(contextNotes.length > 0 ? { contextNotes } : {}),
+        ...(contextFiles.length > 0 ? { contextFiles } : {}),
+        ...(contextLinks.length > 0 ? { contextLinks } : {}),
+        ...(outputNotes.length > 0 ? { outputNotes } : {})
+      })
+    })()
+  }
 
   // A fresh node takes over both kinds of focus: it becomes the selected node
   // (everything else deselects) and focusDraft moves the keyboard into it.
@@ -1043,6 +1119,9 @@ export const useCanvasStore = create<CanvasState>((set, get) => {
       return node
     },
 
+    // Labels are born in edit mode (focusDraft) so you can type right away.
+    addLabelAt: (position) => adopt(makeLabelNode(position, { focusDraft: true })),
+
     addLinkAt: (position, url) => {
       const node = makeLinkNode(position, {
         color: nextColor(),
@@ -1321,7 +1400,7 @@ export const useCanvasStore = create<CanvasState>((set, get) => {
 
     respondPermission: (id, requestId, allow) => {
       const node = get().nodes.find((n) => n.id === id)
-      if (!node || isFile(node) || isLink(node)) return
+      if (!node || isFile(node) || isLink(node) || isLabel(node)) return
       if (node.data.pendingPermission?.requestId !== requestId) return
       // Dismiss immediately; main echoes a permission-resolved event regardless.
       patchData(id, { pendingPermission: undefined })
@@ -1654,38 +1733,7 @@ export const useCanvasStore = create<CanvasState>((set, get) => {
       persist() // title may have changed
       persistThread(id) // the user message is part of the durable transcript now
 
-      const contextNotes = contextNotesFor(id)
-      const outputNotes = outputNotesFor(id)
-      // Only files the session hasn't seen carry bytes this turn; remember
-      // them so a successful turn marks them injected.
-      const injected = new Set(node.data.injectedImages ?? [])
-      const contextFiles = contextFilesFor(id).map((f) => ({
-        ...f,
-        isNew: !injected.has(f.id)
-      }))
-      const newFileIds = contextFiles.filter((f) => f.isNew).map((f) => f.id)
-      if (newFileIds.length > 0) pendingFileInjections.set(id, newFileIds)
-      else pendingFileInjections.delete(id)
-      // Reading the tabs' rendered pages is async — the composer already
-      // cleared and the bubble is streaming-pending, so the await is invisible
-      // (and capped by pageText's extraction timeout).
-      void (async () => {
-        const contextLinks = await withPageContent(contextLinksFor(id))
-        void window.api.thread.send({
-          nodeId: id,
-          text,
-          sessionId: node.data.sessionId,
-          model: get().model,
-          effort: get().effort,
-          // first send of a forked node: fork the parent session at the anchor
-          ...(!node.data.sessionId && node.data.forkOf ? { forkFrom: node.data.forkOf } : {}),
-          ...(node.data.researchArmed ? { research: true } : {}),
-          ...(contextNotes.length > 0 ? { contextNotes } : {}),
-          ...(contextFiles.length > 0 ? { contextFiles } : {}),
-          ...(contextLinks.length > 0 ? { contextLinks } : {}),
-          ...(outputNotes.length > 0 ? { outputNotes } : {})
-        })
-      })()
+      dispatchTurn(node, text, { research: node.data.researchArmed })
     },
 
     // Re-run a failed turn: same prompt, same session. The session resume may
@@ -1725,32 +1773,9 @@ export const useCanvasStore = create<CanvasState>((set, get) => {
         )
       }))
 
-      const contextNotes = contextNotesFor(id)
-      const outputNotes = outputNotesFor(id)
-      const injected = new Set(node.data.injectedImages ?? [])
-      const contextFiles = contextFilesFor(id).map((f) => ({
-        ...f,
-        isNew: !injected.has(f.id)
-      }))
-      const newFileIds = contextFiles.filter((f) => f.isNew).map((f) => f.id)
-      if (newFileIds.length > 0) pendingFileInjections.set(id, newFileIds)
-      else pendingFileInjections.delete(id)
-      void (async () => {
-        const contextLinks = await withPageContent(contextLinksFor(id))
-        void window.api.thread.send({
-          nodeId: id,
-          text: lastUser.text,
-          sessionId: node.data.sessionId,
-          model: get().model,
-          effort: get().effort,
-          // the failed turn may have been a fork's first send — fork again
-          ...(!node.data.sessionId && node.data.forkOf ? { forkFrom: node.data.forkOf } : {}),
-          ...(contextNotes.length > 0 ? { contextNotes } : {}),
-          ...(contextFiles.length > 0 ? { contextFiles } : {}),
-          ...(contextLinks.length > 0 ? { contextLinks } : {}),
-          ...(outputNotes.length > 0 ? { outputNotes } : {})
-        })
-      })()
+      // Retry repeats the last prompt on the same session; research never
+      // re-arms here (it was a one-shot on the original send).
+      dispatchTurn(node, lastUser.text)
     },
 
     sendNote: async (id) => {
@@ -1860,6 +1885,16 @@ export const useCanvasStore = create<CanvasState>((set, get) => {
                 width: p.width,
                 // minimized links collapse to the title row (no explicit height)
                 height: p.height != null && !p.minimized ? p.height : undefined
+              }
+            }
+            if (p.kind === 'label') {
+              // Label text rides `title`; its box (width/height) is explicit
+              // and aspect-free — no screen-fit clamp.
+              return {
+                ...makeLabelNode(p.position, { title: p.title, updatedAt: p.updatedAt }),
+                id: p.id,
+                width: p.width,
+                height: p.height ?? LABEL_FRAME.height
               }
             }
             if (p.kind === 'note') {
@@ -2057,7 +2092,10 @@ window.api.thread.onEvent((event) => {
     patch(event.nodeId, () => ({ pendingPermission: event.request }))
   } else if (event.type === 'permission-resolved') {
     patch(event.nodeId, (node) =>
-      !isFile(node) && !isLink(node) && node.data.pendingPermission?.requestId === event.requestId
+      !isFile(node) &&
+      !isLink(node) &&
+      !isLabel(node) &&
+      node.data.pendingPermission?.requestId === event.requestId
         ? { pendingPermission: undefined }
         : {}
     )

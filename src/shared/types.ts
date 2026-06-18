@@ -66,8 +66,11 @@ export interface ForkRef {
 // research-mode turn — no composer, no forking, no session of their own.
 // 'file' nodes pin an image or PDF from the folder onto the canvas.
 // 'link' nodes are tabs: an embedded browsable web page (a <webview> browser
-// card). The kind keeps its original name so existing canvas.json files load.
-export type NodeKind = 'chat' | 'note' | 'research' | 'file' | 'link'
+// card). 'label' nodes are free-floating text on the canvas — their text rides
+// the `title` field (a label has no name distinct from its text), and the box's
+// width/height drive wrapping and an auto-fit font size.
+// The kind keeps its original name so existing canvas.json files load.
+export type NodeKind = 'chat' | 'note' | 'research' | 'file' | 'link' | 'label'
 
 export interface PersistedNode {
   id: string

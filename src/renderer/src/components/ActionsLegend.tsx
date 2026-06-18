@@ -7,7 +7,8 @@ const ACTIONS = [
   { kind: 'chat', label: 'New Chat', keycap: 'C' },
   { kind: 'note', label: 'New Note', keycap: 'N' },
   { kind: 'file', label: 'Add File', keycap: 'F' },
-  { kind: 'link', label: 'New Tab', keycap: 'T' }
+  { kind: 'link', label: 'New Tab', keycap: 'T' },
+  { kind: 'label', label: 'New Label', keycap: 'L' }
 ] as const
 
 // White paper — the corner panels share the black-and-white vocabulary of the

@@ -5,6 +5,7 @@ import {
   useCanvasStore,
   fileFrame,
   FILE_HEADER_H,
+  LABEL_FRAME,
   LINK_INPUT_FRAME,
   NODE_W,
   type PendingFile
@@ -50,13 +51,14 @@ function ArmedOverlay({
   placing,
   pendingFile
 }: {
-  placing: 'chat' | 'note' | 'file' | 'link'
+  placing: 'chat' | 'note' | 'file' | 'link' | 'label'
   pendingFile: PendingFile | null
 }): React.JSX.Element {
   const setPlacing = useCanvasStore((s) => s.setPlacing)
   const addNodeAt = useCanvasStore((s) => s.addNodeAt)
   const addNoteAt = useCanvasStore((s) => s.addNoteAt)
   const addFileAt = useCanvasStore((s) => s.addFileAt)
+  const addLabelAt = useCanvasStore((s) => s.addLabelAt)
   const addLinkAt = useCanvasStore((s) => s.addLinkAt)
   const addContextEdge = useCanvasStore((s) => s.addContextEdge)
   // A C-armed chat trails a pending context edge from this resource — drawn
@@ -84,8 +86,13 @@ function ArmedOverlay({
   }, [setPlacing])
 
   // Files carry their own frame (an image's natural size, capped; PDFs the
-  // fixed card); chats and notes share the standard node width.
-  const ghostW = placing === 'file' && pendingFile ? fileFrame(pendingFile).width : NODE_W
+  // fixed card); labels their small box; chats and notes the standard width.
+  const ghostW =
+    placing === 'file' && pendingFile
+      ? fileFrame(pendingFile).width
+      : placing === 'label'
+        ? LABEL_FRAME.width
+        : NODE_W
 
   const place = (e: React.MouseEvent): void => {
     const p = screenToFlowPosition({ x: e.clientX, y: e.clientY })
@@ -95,9 +102,11 @@ function ArmedOverlay({
         ? addFileAt(position)
         : placing === 'link'
           ? addLinkAt(position)
-          : placing === 'note'
-            ? addNoteAt(position)
-            : addNodeAt(position)
+          : placing === 'label'
+            ? addLabelAt(position)
+            : placing === 'note'
+              ? addNoteAt(position)
+              : addNodeAt(position)
     // Commit the pending context edge before setPlacing clears the source.
     if (node && ctxSource && placing === 'chat') addContextEdge(ctxSource.id, node.id)
     setPlacing(null)
@@ -134,6 +143,7 @@ function ArmedOverlay({
   const isNote = placing === 'note'
   const isFile = placing === 'file'
   const isLink = placing === 'link'
+  const isLabel = placing === 'label'
   // notes, files, and links are paper under a colored header band
   const isPaper = isNote || isFile || isLink
 
@@ -152,7 +162,8 @@ function ArmedOverlay({
         setPlacing(null)
       }}
     >
-      {cursor && ctxSource && (
+      {cursor &&
+        ctxSource &&
         // The pending context edge: from the resource's right caret knob to the
         // ghost's left side, drawn dimmer and dashed so it reads as not-yet-
         // committed. Coords are overlay-relative (= flow * zoom + viewport),
@@ -181,9 +192,27 @@ function ArmedOverlay({
               />
             </svg>
           )
-        })()
+        })()}
+      {cursor && isLabel && (
+        // Labels have no chrome — the ghost is just the blue editable box,
+        // sized as it will land, with a placeholder hint.
+        <div
+          className="pointer-events-none absolute flex items-center justify-center rounded-[8px] border-2 border-dashed text-center opacity-80"
+          style={{
+            left: cursor.x - (ghostW / 2) * zoom,
+            top: cursor.y - ANCHOR_Y * zoom,
+            width: ghostW,
+            height: LABEL_FRAME.height,
+            transform: `scale(${zoom})`,
+            transformOrigin: 'top left',
+            borderColor: '#3B82F6',
+            backgroundColor: '#3B82F60D'
+          }}
+        >
+          <span className="text-[20px] font-medium text-[#3B82F6] opacity-70">Label</span>
+        </div>
       )}
-      {cursor && (
+      {cursor && !isLabel && (
         <>
           <div
             className="pointer-events-none absolute flex flex-col rounded-[14px] border border-dashed opacity-80"

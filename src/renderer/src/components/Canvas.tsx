@@ -15,6 +15,7 @@ import ChatNodeView from './ChatNodeView'
 import NoteNodeView from './NoteNodeView'
 import FileNodeView from './FileNodeView'
 import LinkNodeView from './LinkNodeView'
+import LabelNodeView from './LabelNodeView'
 import ForkEdge from './ForkEdge'
 import ContextEdge from './ContextEdge'
 import DeriveEdge from './DeriveEdge'
@@ -42,7 +43,8 @@ const nodeTypes: NodeTypes = {
   chat: ChatNodeView,
   note: NoteNodeView,
   file: FileNodeView,
-  link: LinkNodeView
+  link: LinkNodeView,
+  label: LabelNodeView
 }
 const edgeTypes: EdgeTypes = { fork: ForkEdge, context: ContextEdge, derive: DeriveEdge }
 
@@ -133,14 +135,14 @@ function CanvasInner(): React.JSX.Element {
         }
         return
       }
-      // Bare C / N / F / T spawn a chat / note / file / tab — but only when
-      // typing focus is elsewhere, so the letters still work inside inputs
-      // and notes.
+      // Bare C / N / F / T / L spawn a chat / note / file / tab / label — but
+      // only when typing focus is elsewhere, so the letters still work inside
+      // inputs and notes.
       if (e.altKey || e.repeat) return
       const t = e.target as HTMLElement
       if (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable) return
       const key = e.key.toLowerCase()
-      if (key === 'c' || key === 'n' || key === 'f' || key === 't') {
+      if (key === 'c' || key === 'n' || key === 'f' || key === 't' || key === 'l') {
         e.preventDefault()
         // Reading a file/link in the half-sheet, C means "chat about this":
         // arm a chat ghost that already trails a dimmed context edge from the
@@ -155,7 +157,17 @@ function CanvasInner(): React.JSX.Element {
             return
           }
         }
-        spawn(key === 'n' ? 'note' : key === 'f' ? 'file' : key === 't' ? 'link' : 'chat')
+        spawn(
+          key === 'n'
+            ? 'note'
+            : key === 'f'
+              ? 'file'
+              : key === 't'
+                ? 'link'
+                : key === 'l'
+                  ? 'label'
+                  : 'chat'
+        )
       }
     }
     window.addEventListener('keydown', onKeyDown)

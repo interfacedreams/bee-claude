@@ -84,6 +84,14 @@ body {
   background: var(--color-neutral-400);
 }
 
+/* Label nodes: a faded placeholder shown while the text box is empty (the
+   editable carries the text via .innerText, so :empty catches the blank state). */
+.label-text:empty::before {
+  content: attr(data-placeholder);
+  color: #3b82f6;
+  opacity: 0.5;
+}
+
 /* Context connector circles (note → chat). Size/placement are inline
    (ctxHandleStyle); React Flow positions them with translate(-50%, -50%),
    which every transform here has to repeat. The circle swells on hover and
