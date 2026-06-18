@@ -13,7 +13,9 @@ import { usePanel } from '../lib/usePanel'
 import NoteBody from './NoteBody'
 import DockedStub from './DockedStub'
 import PanelChips from './PanelChips'
+import NewChatButton from './NewChatButton'
 import TransformButton from './TransformButton'
+import Tooltip from './Tooltip'
 import TransformFrame from './TransformFrame'
 import {
   CHIP_BUTTON,
@@ -31,7 +33,7 @@ import { type NoteEditorHandle } from './NoteEditor'
 // header band (chats are solid colored cards).
 const PAPER = '#FFFDF6'
 
-function NoteNodeView({ id, data, selected }: NodeProps<NoteNode>): React.JSX.Element {
+function NoteNodeView({ id, data, selected, height }: NodeProps<NoteNode>): React.JSX.Element {
   const setTitle = useCanvasStore((s) => s.setTitle)
   const commitNoteTitle = useCanvasStore((s) => s.commitNoteTitle)
   const requestDelete = useCanvasStore((s) => s.requestDelete)
@@ -47,6 +49,15 @@ function NoteNodeView({ id, data, selected }: NodeProps<NoteNode>): React.JSX.El
   const transforming = useCanvasStore((s) => s.transforming === id)
   const explicitHeight = useCanvasStore((s) => s.nodes.find((n) => n.id === id)?.height)
   const { docked, mode, open, collapse } = usePanel(id)
+
+  // Hold the note's height while it's docked so the card box stays put when its
+  // body pops into the side panel (the stub centers in it) — matching webpages,
+  // which keep height for free since they're born with an explicit frame. An
+  // auto-sized note has no stored height, so we freeze the last measured one;
+  // a user-resized note already keeps its explicit height and needs no help.
+  const lastMeasured = useRef<number | undefined>(undefined)
+  if (!docked && height != null) lastMeasured.current = height
+  const dockHold = docked && explicitHeight == null ? lastMeasured.current : undefined
 
   // Version pager: a floating ‹ n/total › control below the note. Positions
   // run 1..total with the last always the live, editable content; stepping
@@ -70,9 +81,11 @@ function NoteNodeView({ id, data, selected }: NodeProps<NoteNode>): React.JSX.El
   const inMemory = data.pinned || isClaudeMd
 
   const streaming = data.status === 'streaming'
-  // Unnamed but already streaming or filled in: show a pulsing "…" until the
-  // background title turn lands (see the thread-event handler).
-  const awaitingTitle = !data.title && (streaming || !!data.content)
+  // Unnamed but streaming, or with a background title turn in flight: show a
+  // pulsing "…" until it lands (see the thread-event handler). A manually
+  // edited/pasted note never sets titlePending, so it reads "Untitled note"
+  // instead of stranding on the placeholder forever.
+  const awaitingTitle = !data.title && (streaming || !!data.titlePending)
   const palette = paletteFor(data.color)
 
   // A note is discardable while it has no substance yet.
@@ -119,6 +132,7 @@ function NoteNodeView({ id, data, selected }: NodeProps<NoteNode>): React.JSX.El
       style={
         {
           maxHeight: explicitHeight ?? data.growthCap ?? MAX_NODE_H,
+          minHeight: dockHold,
           '--np-bg': palette.bg,
           '--np-edge': palette.edge,
           '--np-chip': `${palette.edge}99`,
@@ -192,9 +206,9 @@ function NoteNodeView({ id, data, selected }: NodeProps<NoteNode>): React.JSX.El
           // slightly faded so the knob reads as "optional — already in memory".
           ...(inMemory
             ? {
-                width: 28,
-                height: 28,
-                right: -22,
+                width: 36,
+                height: 36,
+                right: -24,
                 opacity: 0.85,
                 display: 'flex',
                 alignItems: 'center',
@@ -205,6 +219,8 @@ function NoteNodeView({ id, data, selected }: NodeProps<NoteNode>): React.JSX.El
       >
         {inMemory && <Brain className="pointer-events-none h-4 w-4 text-white" />}
       </Handle>
+      {/* armed: a "New Chat" pill appears to the right of the connector */}
+      {armed && <NewChatButton id={id} />}
 
       {!data.minimized && (
         <>
@@ -248,14 +264,11 @@ function NoteNodeView({ id, data, selected }: NodeProps<NoteNode>): React.JSX.El
         }`}
       >
         {!data.minimized && (
-          <button
-            type="button"
-            onClick={() => toggleMinimize(id)}
-            title="Minimize"
-            className={CHIP_BUTTON}
-          >
+          <Tooltip label="Minimize">
+          <button type="button" onClick={() => toggleMinimize(id)} className={CHIP_BUTTON}>
             <Minus className="h-[25px] w-[25px]" />
           </button>
+          </Tooltip>
         )}
         <PanelChips mode={mode} open={open} />
         {isClaudeMd ? (
@@ -317,43 +330,42 @@ function NoteNodeView({ id, data, selected }: NodeProps<NoteNode>): React.JSX.El
             />
           )}
           {!data.minimized && !isClaudeMd && (
-            <button
-              type="button"
-              onClick={() => togglePin(id)}
-              title={
+            <Tooltip
+              label={
                 data.pinned
                   ? 'In project memory — every new chat sees this note'
                   : 'Add to project memory'
               }
-              className={`nodrag flex h-9 w-9 shrink-0 cursor-pointer items-center justify-center rounded-lg transition-colors ${
-                data.pinned
-                  ? 'bg-(--np-accent) text-white'
-                  : 'bg-(--np-chip) text-(--np-deep) hover:bg-(--np-accent)'
-              }`}
             >
-              <Brain className="h-[25px] w-[25px]" />
-            </button>
+              <button
+                type="button"
+                onClick={() => togglePin(id)}
+                className={`nodrag flex h-9 w-9 shrink-0 cursor-pointer items-center justify-center rounded-lg transition-colors ${
+                  data.pinned
+                    ? 'bg-(--np-accent) text-white'
+                    : 'bg-(--np-chip) text-(--np-deep) hover:bg-(--np-accent)'
+                }`}
+              >
+                <Brain className="h-[25px] w-[25px]" />
+              </button>
+            </Tooltip>
           )}
           {/* CLAUDE.md is always in memory, in full — the brain is shown filled
               like a pinned note's, but it's a fixed indicator, not a toggle. */}
           {!data.minimized && isClaudeMd && (
-            <div
-              title="Always in project memory — every chat sees CLAUDE.md in full"
-              className="flex h-9 w-9 shrink-0 cursor-default items-center justify-center rounded-lg bg-(--np-accent) text-white"
-            >
-              <Brain className="h-[25px] w-[25px]" />
-            </div>
+            <Tooltip label="Always in project memory — every chat sees CLAUDE.md in full">
+              <div className="flex h-9 w-9 shrink-0 cursor-default items-center justify-center rounded-lg bg-(--np-accent) text-white">
+                <Brain className="h-[25px] w-[25px]" />
+              </div>
+            </Tooltip>
           )}
           {!data.minimized && <TransformButton id={id} />}
           {!isClaudeMd && (
-            <button
-              type="button"
-              onClick={() => requestDelete(id)}
-              title="Delete this note"
-              className={CHIP_BUTTON}
-            >
-              <Trash2 className="h-[25px] w-[25px]" />
-            </button>
+            <Tooltip label="Delete this note">
+              <button type="button" onClick={() => requestDelete(id)} className={CHIP_BUTTON}>
+                <Trash2 className="h-[25px] w-[25px]" />
+              </button>
+            </Tooltip>
           )}
         </div>
       </div>

@@ -42,6 +42,9 @@ const TUCK = 20 // how far the tab extends down behind the node's top
 // dashed frame just outside that ring (3px out) on the sides and bottom, so the
 // dash's inner edge clears the ring instead of touching it.
 const DASH = 5
+// Pull the frame in 1px on each side so the outer width sits a touch narrower
+// than the full DASH rim — the sides tuck a hair closer to the card.
+const SIDE = DASH - 1
 const OUTER_RADIUS = RADIUS + DASH // frame/tab corners
 
 function TransformComposer({ id }: { id: string }): React.JSX.Element {
@@ -110,8 +113,8 @@ function TransformComposer({ id }: { id: string }): React.JSX.Element {
         style={{
           position: 'absolute',
           top: -bar,
-          left: -DASH,
-          right: -DASH,
+          left: -SIDE,
+          right: -SIDE,
           height: bar + TUCK,
           zIndex: -2,
           background: wrap.bg,
@@ -128,8 +131,8 @@ function TransformComposer({ id }: { id: string }): React.JSX.Element {
         style={{
           position: 'absolute',
           top: -bar,
-          left: -DASH,
-          right: -DASH,
+          left: -SIDE,
+          right: -SIDE,
           minHeight: bar,
           zIndex: 12,
           display: 'flex',
@@ -290,8 +293,8 @@ function TransformComposer({ id }: { id: string }): React.JSX.Element {
         style={{
           position: 'absolute',
           top: -bar,
-          left: -DASH,
-          right: -DASH,
+          left: -SIDE,
+          right: -SIDE,
           bottom: -DASH,
           zIndex: -1,
           border: `2px dashed ${wrap.accent}`,

@@ -153,14 +153,18 @@ function ArmedOverlay({
       }}
     >
       {cursor && ctxSource && (
-        // The pending context edge: from the resource's right edge to the
+        // The pending context edge: from the resource's right caret knob to the
         // ghost's left side, drawn dimmer and dashed so it reads as not-yet-
         // committed. Coords are overlay-relative (= flow * zoom + viewport),
         // matching the ghost. Behind the ghost in DOM order so it tucks under.
         (() => {
           const sw = ctxSource.width ?? ctxSource.measured?.width ?? NODE_W
           const sh = ctxSource.height ?? ctxSource.measured?.height ?? 360
-          const ax = vpX + (ctxSource.position.x + sw) * zoom
+          // Leave from the right caret knob, not the node's body edge: the knob
+          // centers SOURCE_OFFSET past the edge and is ~half ctxHandleStyle wide,
+          // so its right rim sits ~35px out (matches ContextConnectOverlay).
+          const KNOB_RIGHT = 21 + 16
+          const ax = vpX + (ctxSource.position.x + sw + KNOB_RIGHT) * zoom
           const ay = vpY + (ctxSource.position.y + sh / 2) * zoom
           const tx = cursor.x - (ghostW / 2) * zoom
           const ty = cursor.y

@@ -33,7 +33,6 @@ import ExpandedPanel from './ExpandedPanel'
 import Toast from './Toast'
 import { useToastStore } from '../store/toast'
 import { useCanvasStore, NODE_W, isChat, isNote, isFile, isLink } from '../store/canvas'
-import type { CanvasNode } from '../store/canvas'
 import type { ChosenFile } from '../../../shared/types'
 import { CTX_HANDLE_ID, OUTPUT_HANDLE_ID, INPUT_HANDLE_ID } from '../lib/nodeChrome'
 import { paletteFor } from '../lib/palette'
@@ -60,7 +59,8 @@ function dropRejectMessage(rejected: File[]): string {
   if (uniq.length === 1) {
     return `.${uniq[0].toUpperCase()} isn't supported — images must be PNG or JPEG.`
   }
-  if (rejected.length === 1) return `Couldn't add “${rejected[0].name}” — images must be PNG or JPEG.`
+  if (rejected.length === 1)
+    return `Couldn't add “${rejected[0].name}” — images must be PNG or JPEG.`
   return `Couldn't add those files — images must be PNG or JPEG.`
 }
 
@@ -77,21 +77,6 @@ function pastedUrl(text: string): string | null {
   } catch {
     return null
   }
-}
-
-// Shift+click pairs two nodes into the one edge their kinds allow, using click
-// order to pick the direction (source = first click, target = second). A chat
-// feeds a note (output edge); a resource — note/file/link — feeds a chat
-// (context edge). Anything else (two notes, two chats, a chat→file) has no
-// valid edge, so we return null and the pair just stays multi-selected.
-// Research chats can neither drive a note nor take context, so they never pair.
-type PairEdge = { kind: 'output' | 'context'; source: string; target: string }
-function pairEdge(a: CanvasNode, b: CanvasNode): PairEdge | null {
-  if (isChat(a) && a.data.kind !== 'research' && isNote(b))
-    return { kind: 'output', source: a.id, target: b.id }
-  if ((isNote(a) || isFile(a) || isLink(a)) && isChat(b) && b.data.kind !== 'research')
-    return { kind: 'context', source: a.id, target: b.id }
-  return null
 }
 
 function CanvasInner(): React.JSX.Element {
@@ -164,9 +149,7 @@ function CanvasInner(): React.JSX.Element {
         if (key === 'c') {
           const s = useCanvasStore.getState()
           const open =
-            s.expanded?.mode === 'panel'
-              ? s.nodes.find((n) => n.id === s.expanded?.id)
-              : undefined
+            s.expanded?.mode === 'panel' ? s.nodes.find((n) => n.id === s.expanded?.id) : undefined
           if (open && (isFile(open) || isLink(open))) {
             s.armContextChat(open.id)
             return
@@ -201,52 +184,46 @@ function CanvasInner(): React.JSX.Element {
   )
 
   // Shift+click multi-select doubles as connect: holding Shift and clicking two
-  // nodes that form a valid source→target pair (in click order) draws the edge
-  // and clears the selection. Any other Shift selection — two notes, three
-  // nodes — just stays a multi-selection you can drag together. The ordered
-  // ref is our own tally (React Flow's `selected` set isn't ordered, and we
-  // need direction); a plain pane click resets it so it can't go stale.
-  const shiftSel = useRef<string[]>([])
-  const clearSelection = useCallback(() => {
-    shiftSel.current = []
-    // Selection is controlled — deselect through the same change pipe React
-    // Flow uses, or the next render from the store would just restore it.
-    const deselect = useCanvasStore
-      .getState()
-      .nodes.filter((n) => n.selected)
-      .map((n) => ({ id: n.id, type: 'select' as const, selected: false }))
-    if (deselect.length) onNodesChange(deselect)
-  }, [onNodesChange])
-
-  const onNodeClick = useCallback(
-    (e: React.MouseEvent, node: { id: string }) => {
+  // nodes that form a valid source→target pair (in click order) draws the edge.
+  // We hit-test the clicked `.react-flow__node` from a window listener rather
+  // than React Flow's onNodeClick, because a click landing on a link's <webview>
+  // guest never reaches the host DOM as an onNodeClick — but with Shift held,
+  // LinkNodeView floats a transparent host-DOM layer over that guest, so the
+  // click surfaces here and resolves to the node's data-id all the same. The
+  // ordered tally and the pairing live in the store (shiftConnect); a click
+  // without Shift, on a node or the bare pane, clears it so it can't go stale.
+  useEffect(() => {
+    const onClick = (e: MouseEvent): void => {
+      const t = e.target as HTMLElement | null
+      const s = useCanvasStore.getState()
       if (!e.shiftKey) {
-        shiftSel.current = []
+        s.resetShiftConnect()
         return
       }
-      const cur = shiftSel.current
-      if (cur.includes(node.id)) {
-        // toggled back off — mirrors React Flow deselecting it
-        shiftSel.current = cur.filter((x) => x !== node.id)
-        return
-      }
-      const next = [...cur, node.id]
-      shiftSel.current = next
-      if (next.length !== 2) return // first pick, or 3+ — never auto-connect
-      const all = useCanvasStore.getState().nodes
-      const a = all.find((n) => n.id === next[0])
-      const b = all.find((n) => n.id === next[1])
-      const edge = a && b ? pairEdge(a, b) : null
-      if (!edge) return // not a connectable pair — leave them multi-selected
-      if (edge.kind === 'output') addOutputEdge(edge.source, edge.target)
-      else addContextEdge(edge.source, edge.target)
-      clearSelection()
-    },
-    [addContextEdge, addOutputEdge, clearSelection]
-  )
-
-  const onPaneClick = useCallback(() => {
-    shiftSel.current = []
+      // let interactive chrome (delete, pin, the address bar) act on its own —
+      // a Shift-click there shouldn't also count as a connect pick
+      if (t?.closest('button, a, input, textarea, [contenteditable="true"]')) return
+      const id = t?.closest('.react-flow__node')?.getAttribute('data-id')
+      if (id) s.shiftConnect(id)
+    }
+    // Track Shift so LinkNodeView can mount its over-the-webview pick layer only
+    // while it's held; a window blur (focus left the app) drops the held state.
+    const onShiftKey = (e: KeyboardEvent): void => {
+      if (e.key === 'Shift') useCanvasStore.getState().setShiftHeld(e.type === 'keydown')
+    }
+    const onBlur = (): void => useCanvasStore.getState().setShiftHeld(false)
+    // capture phase: runs before React Flow's own handlers, and we never stop
+    // propagation, so native Shift multi-select keeps working underneath.
+    window.addEventListener('click', onClick, true)
+    window.addEventListener('keydown', onShiftKey)
+    window.addEventListener('keyup', onShiftKey)
+    window.addEventListener('blur', onBlur)
+    return () => {
+      window.removeEventListener('click', onClick, true)
+      window.removeEventListener('keydown', onShiftKey)
+      window.removeEventListener('keyup', onShiftKey)
+      window.removeEventListener('blur', onBlur)
+    }
   }, [])
 
   // Electron's default for a dropped file is to navigate the window to it —
@@ -477,8 +454,6 @@ function CanvasInner(): React.JSX.Element {
               }
             })}
             onNodesChange={onNodesChange}
-            onNodeClick={onNodeClick}
-            onPaneClick={onPaneClick}
             onConnect={handleConnect}
             nodeTypes={nodeTypes}
             edgeTypes={edgeTypes}

@@ -40,10 +40,14 @@ export const ctxHandleStyle = (
   shape: 'circle' | 'square' = 'circle'
 ): React.CSSProperties => ({
   // top/bottom ride the horizontal center; right rides the vertical center
-  ...(side === 'top' ? { top: -17 } : side === 'bottom' ? { bottom: -15 } : { right: -19 }),
+  // top input and right output sit the same 21px outside their edge (equal
+  // padding); bottom output rides a touch closer.
+  ...(side === 'top' ? { top: -21 } : side === 'bottom' ? { bottom: -15 } : { right: -21 }),
   ...(side === 'right' ? { top: '50%' } : { left: '50%' }),
-  width: 24,
-  height: 24,
+  // 31px ≈ 24 × 1.3. The translate(-50%, -50%) pins each knob by its center, so
+  // growing the box keeps the same anchor point — the offsets above don't change.
+  width: 31,
+  height: 31,
   borderRadius: shape === 'circle' ? '50%' : 6,
   background: accent,
   border: '2px solid #FFFFFF',

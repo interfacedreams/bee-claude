@@ -29,7 +29,7 @@ import {
 import { useTitleGuard } from '../lib/titleGuard'
 import TitleEditSlot from './TitleEditSlot'
 
-function ChatNodeView({ id, data, selected }: NodeProps<ChatNode>): React.JSX.Element {
+function ChatNodeView({ id, data, selected, height }: NodeProps<ChatNode>): React.JSX.Element {
   const setTitle = useCanvasStore((s) => s.setTitle)
   const forkChat = useCanvasStore((s) => s.forkChat)
   const requestDelete = useCanvasStore((s) => s.requestDelete)
@@ -45,6 +45,14 @@ function ChatNodeView({ id, data, selected }: NodeProps<ChatNode>): React.JSX.El
   const explicitHeight = useCanvasStore((s) => s.nodes.find((n) => n.id === id)?.height)
   const { fitView } = useReactFlow()
   const { docked, mode, open, collapse } = usePanel(id)
+
+  // Hold the chat's height while it's docked so its card box stays put when the
+  // conversation pops into the side panel (the stub centers in it). An
+  // auto-sized chat has no stored height, so we freeze the last measured one; a
+  // user-resized chat already keeps its explicit height and needs no help.
+  const lastMeasured = useRef<number | undefined>(undefined)
+  if (!docked && height != null) lastMeasured.current = height
+  const dockHold = docked && explicitHeight == null ? lastMeasured.current : undefined
 
   const titleRef = useRef<HTMLInputElement>(null)
   const rootRef = useRef<HTMLDivElement>(null)
@@ -129,6 +137,7 @@ function ChatNodeView({ id, data, selected }: NodeProps<ChatNode>): React.JSX.El
         {
           // the growth cap only limits auto-sizing; an explicit (user-resized) height wins
           maxHeight: explicitHeight ?? data.growthCap ?? MAX_NODE_H,
+          minHeight: dockHold,
           '--np-bg': palette.bg,
           '--np-edge': palette.edge,
           '--np-chip': `${palette.edge}99`, // chip buttons at 60%

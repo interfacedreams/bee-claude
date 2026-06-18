@@ -32,9 +32,9 @@ const isCtxTarget = (source: CanvasNode, n: CanvasNode): boolean =>
 // top edge; a source's output sits 19px past the right edge. Radius 12 — the
 // pending arrow runs from the source circle's right to the target circle's top
 // like a committed edge.
-const CIRCLE_OFFSET = 15
-const SOURCE_OFFSET = 19
-const CIRCLE_R = 12
+const CIRCLE_OFFSET = 21
+const SOURCE_OFFSET = 21
+const CIRCLE_R = 16
 // Snap radius is SCREEN px (divided by zoom before hit-testing) so the
 // reach feels the same at every zoom level. The snap zone is a tight halo
 // around the chat's circle — aim at the circle, not the node. One radius

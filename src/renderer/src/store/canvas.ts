@@ -105,6 +105,11 @@ export interface NoteData {
   // rather than clobbering the user's edits.
   externalEdit?: { content: string }
   status: 'idle' | 'streaming'
+  // Runtime-only: a background title turn is in flight (kicked off after an AI
+  // turn lands on an unnamed note). Drives the pulsing "…" placeholder; cleared
+  // when the title installs. A manually-edited note never sets this, so it
+  // shows "Untitled note" instead of stranding on the placeholder forever.
+  titlePending?: boolean
   draft: string // the AI-instruction composer
   lastReply?: string // the AI's brief commentary from its latest editing turn
   minimized: boolean
@@ -384,9 +389,10 @@ interface CanvasState {
   // placement click on the canvas (armed by the toolbar buttons / C / N / F / L).
   placing: 'chat' | 'note' | 'file' | 'link' | null
   setPlacing: (kind: 'chat' | 'note' | 'file' | 'link' | null) => void
-  // Runtime-only: a chat placement armed by C while reading a file/link in the
-  // half-sheet carries the resource id here, so the ghost shows a dimmed pending
-  // context edge and dropping it wires resource → chat. Cleared with placing.
+  // Runtime-only: a chat placement armed from a resource (its right-edge chat
+  // knob, or C while reading a file/link in the half-sheet) carries the resource
+  // id here, so the ghost shows a dimmed pending context edge and dropping it
+  // wires resource → chat. Cleared with placing.
   placingContextSource: string | null
   armContextChat: (sourceId: string) => void
   // Runtime-only: the picked image riding the file-placement ghost.
@@ -398,6 +404,17 @@ interface CanvasState {
   // until a click on a chat commits the edge — or any other click / Esc cancels.
   ctxConnectSource: string | null
   setCtxConnectSource: (id: string | null) => void
+  // Runtime-only: shift-click-to-connect. Holding Shift and clicking two nodes
+  // in source→target order wires the edge their kinds allow (chat→note output,
+  // resource→chat context). The ordered tally lives here, not in a component
+  // ref, so a transparent shift-layer laid over a link's <webview> — whose page
+  // clicks never reach the host DOM — can register a pick the same way the bare
+  // canvas does. Whether Shift is currently held (drives that layer's mount).
+  shiftPicks: string[]
+  shiftHeld: boolean
+  shiftConnect: (id: string) => void
+  resetShiftConnect: () => void
+  setShiftHeld: (held: boolean) => void
   // Runtime-only: the node currently wrapped in transform mode — a dashed,
   // colored temporary frame with a one-shot composer floating above it (its
   // instruction runs deriveNote). One node at a time; Esc / the × clears it.
@@ -410,17 +427,8 @@ interface CanvasState {
   // webview can only be mounted once. Esc or a chip closes it; the frame is
   // never touched.
   expanded: { id: string; mode: PanelMode } | null
-  // A browsing session in the side panel: the ordered link tabs opened by
-  // clicking links in chat/note bodies. expanded.id is whichever is active
-  // (mounted); the rest are stubs on the canvas. Empty for a normal single-
-  // node panel (a chat/note/file opened via its own chip). Closing the panel
-  // clears it; the tabs stay as separate cards on the canvas.
-  panelTabs: string[]
   expandNode: (id: string, mode?: PanelMode) => void
   collapseExpanded: () => void
-  // Drop one tab from the strip (its node stays on the canvas). If it was the
-  // active tab, focus drops to a neighbor — or the panel closes if it was last.
-  closePanelTab: (id: string) => void
   requestDelete: (id: string) => void
   cancelDelete: () => void
   deleteChat: (id: string, cascade: boolean) => void
@@ -483,9 +491,12 @@ interface CanvasState {
   // (note/file/link → chat only).
   addContextEdge: (sourceId: string, chatId: string) => void
   removeContextEdge: (edgeId: string) => void
-  // Spawn a chat wired to read a file/link, placed right of its card. Returns
-  // the new chat's id, or null if the source isn't a connectable resource.
-  chatAbout: (sourceId: string) => string | null
+  // Spawn a chat wired to read a note/file/link. With `center` (a flow-space
+  // point), the chat is centered there — used by the panel's chat button to
+  // drop it in the middle of the canvas beside the open resource. Without it,
+  // the chat lands just right of the source's card. Returns the new chat's id,
+  // or null if the source isn't a connectable resource.
+  chatAbout: (sourceId: string, center?: { x: number; y: number }) => string | null
   // Wire a chat → note so the chat can read AND write that note.
   addOutputEdge: (chatId: string, noteId: string) => void
   discardNode: (id: string) => void
@@ -642,8 +653,7 @@ export const useCanvasStore = create<CanvasState>((set, get) => {
       placing: null,
       pendingFile: null,
       transforming: null,
-      expanded: null,
-      panelTabs: []
+      expanded: null
     })
     const vp = await get().load()
     return vp ?? { x: 0, y: 0, zoom: 1 } // fresh folder: reset the view
@@ -811,9 +821,10 @@ export const useCanvasStore = create<CanvasState>((set, get) => {
     placingContextSource: null,
     pendingFile: null,
     ctxConnectSource: null,
+    shiftPicks: [],
+    shiftHeld: false,
     transforming: null,
     expanded: null,
-    panelTabs: [],
 
     // The pending image lives and dies with file-placement mode. Any re-arm or
     // cancel also drops a pending context source — it only rides a C-armed chat.
@@ -824,13 +835,14 @@ export const useCanvasStore = create<CanvasState>((set, get) => {
           : { placing: kind, pendingFile: null, placingContextSource: null }
       ),
 
-    // C while reading a file/link in the half-sheet: arm a chat ghost that
-    // carries a dimmed pending context edge from the resource. Re-pressing C on
-    // the same source disarms (toggle), matching the toolbar buttons.
+    // "Chat about this": arm a chat ghost that carries a dimmed pending context
+    // edge from the resource (the note/file/link's right knob, or C while
+    // reading a file/link in the half-sheet). Re-arming the same source disarms
+    // (toggle), matching the toolbar buttons.
     armContextChat: (sourceId) => {
       const s = get()
       const src = s.nodes.find((n) => n.id === sourceId)
-      if (!src || !(isFile(src) || isLink(src))) return
+      if (!src || !(isFile(src) || isLink(src) || isNote(src))) return
       if (s.placing === 'chat' && s.placingContextSource === sourceId) {
         set({ placing: null, placingContextSource: null })
         return
@@ -857,7 +869,70 @@ export const useCanvasStore = create<CanvasState>((set, get) => {
 
     setCtxConnectSource: (id) => set({ ctxConnectSource: id }),
 
-    setTransforming: (id) => set({ transforming: id }),
+    shiftConnect: (id) => {
+      const picks = get().shiftPicks
+      // a second click on the same node toggles it back off (mirrors React
+      // Flow deselecting it), so a mis-click is easy to undo
+      if (picks.includes(id)) {
+        set({ shiftPicks: picks.filter((x) => x !== id) })
+        return
+      }
+      const next = [...picks, id]
+      if (next.length < 2) {
+        set({ shiftPicks: next }) // first pick — wait for the partner
+        return
+      }
+      // Second pick: clear the tally, then wire the one edge these two kinds
+      // allow, using click order for direction (source = first, target =
+      // second). A chat feeds a note (output); a note/file/link feeds a chat
+      // (context). Research chats can neither drive a note nor take context.
+      // The add* actions re-validate and no-op on a bad or duplicate pair.
+      set({ shiftPicks: [] })
+      const [aId, bId] = next
+      const a = get().nodes.find((n) => n.id === aId)
+      const b = get().nodes.find((n) => n.id === bId)
+      let connected = false
+      if (a && b) {
+        if (isChat(a) && a.data.kind !== 'research' && isNote(b)) {
+          get().addOutputEdge(a.id, b.id)
+          connected = true
+        } else if (
+          (isNote(a) || isFile(a) || isLink(a)) &&
+          isChat(b) &&
+          b.data.kind !== 'research'
+        ) {
+          get().addContextEdge(a.id, b.id)
+          connected = true
+        }
+      }
+      // A wired pair drops the selection it left behind; a non-pair stays
+      // multi-selected (React Flow's own shift-select) so it can drag together.
+      if (connected)
+        set((s) => ({
+          nodes: s.nodes.map((n) =>
+            (n.id === aId || n.id === bId) && n.selected ? { ...n, selected: false } : n
+          )
+        }))
+    },
+
+    resetShiftConnect: () => {
+      if (get().shiftPicks.length) set({ shiftPicks: [] })
+    },
+
+    setShiftHeld: (held) => {
+      if (get().shiftHeld !== held) set({ shiftHeld: held })
+    },
+
+    setTransforming: (id) =>
+      set((s) => ({
+        transforming: id,
+        // Arming transform: deselect the inner node so it sheds its focus ring
+        // and the dashed frame stands on its own.
+        nodes:
+          id == null
+            ? s.nodes
+            : s.nodes.map((n) => (n.id === id && n.selected ? { ...n, selected: false } : n))
+      })),
 
     setModel: (model) => {
       set({ model })
@@ -871,28 +946,10 @@ export const useCanvasStore = create<CanvasState>((set, get) => {
 
     expandNode: (id, mode = 'panel') => {
       if (!get().nodes.some((n) => n.id === id)) return
-      // Switching to a tab already in the browsing strip keeps the strip;
-      // expanding anything else starts a fresh single-node panel.
-      set((s) => ({
-        expanded: { id, mode },
-        ...(s.panelTabs.includes(id) ? {} : { panelTabs: [] })
-      }))
+      set({ expanded: { id, mode } })
     },
 
-    collapseExpanded: () => set({ expanded: null, panelTabs: [] }),
-
-    closePanelTab: (id) => {
-      set((s) => {
-        const remaining = s.panelTabs.filter((t) => t !== id)
-        if (s.expanded?.id !== id) return { panelTabs: remaining }
-        // Closing the active tab: fall to its right neighbor, else its left.
-        const at = s.panelTabs.indexOf(id)
-        const next = remaining[at] ?? remaining[at - 1]
-        return next
-          ? { panelTabs: remaining, expanded: { id: next, mode: s.expanded.mode } }
-          : { panelTabs: [], expanded: null }
-      })
-    },
+    collapseExpanded: () => set({ expanded: null }),
 
     requestDelete: (id) => {
       if (isClaudeMd(id)) return // CLAUDE.md is permanent
@@ -908,17 +965,14 @@ export const useCanvasStore = create<CanvasState>((set, get) => {
         pendingDeleteId: null,
         // deleting the panel-open node closes the panel with it
         ...(s.expanded && doomed.has(s.expanded.id) ? { expanded: null } : {}),
-        // and drops any deleted tabs from the browsing strip
-        ...(s.panelTabs.some((t) => doomed.has(t))
-          ? { panelTabs: s.panelTabs.filter((t) => !doomed.has(t)) }
-          : {}),
         nodes: s.nodes.filter((n) => !doomed.has(n.id)),
         edges: s.edges.filter((e) => !doomed.has(e.source) && !doomed.has(e.target))
       }))
       for (const nodeId of doomed) {
         const node = byId.get(nodeId)
         if (node && isNote(node)) void window.api.note.delete(nodeId)
-        else if (node && isLink(node)) void window.api.link.unclip(nodeId) // drop its clip, if any
+        else if (node && isLink(node))
+          void window.api.link.unclip(nodeId) // drop its clip, if any
         else if (node && isFile(node)) {
           // nothing on disk to clean up — the node is just a pin
         } else void window.api.canvas.deleteThread(nodeId)
@@ -1002,25 +1056,15 @@ export const useCanvasStore = create<CanvasState>((set, get) => {
     openLinkInPanel: (url, sourceId) => {
       // Drop the tab just right of the node the link was clicked in (so its
       // canvas card has a sensible home), or at the viewport's top-left when
-      // there's no source. adopt doesn't dodge overlaps, so cascade each new
-      // tab of the session down-right of the last — without it, several links
-      // from one chat would stack exactly, hidden behind each other once the
-      // panel closes. The tab opens straight into the panel regardless; the
-      // cascade only matters for where its card lands on the canvas.
+      // there's no source.
       const src = sourceId ? get().nodes.find((n) => n.id === sourceId) : undefined
       const vp = get().viewport
-      const step = get().panelTabs.length * GAP
-      const base = src
+      const position = src
         ? { x: src.position.x + (src.width ?? NODE_W) + GAP, y: src.position.y }
         : { x: (-vp.x + 80) / vp.zoom, y: (-vp.y + 80) / vp.zoom }
-      const position = { x: base.x + step, y: base.y + step }
       const node = get().addLinkAt(position, url)
-      // Append to the browsing strip and bring the fresh tab to the front —
-      // a clicked link opens in the foreground, like a browser.
-      set((s) => ({
-        panelTabs: [...s.panelTabs.filter((t) => t !== node.id), node.id],
-        expanded: { id: node.id, mode: 'panel' }
-      }))
+      // One tab at a time in the panel — the fresh tab replaces whatever was open.
+      set({ expanded: { id: node.id, mode: 'panel' } })
       return node.id
     },
 
@@ -1171,28 +1215,44 @@ export const useCanvasStore = create<CanvasState>((set, get) => {
         }
         const url = node.data.url
         if (!url) return
+        // Clipping is async (extract → write → describe), so flip `pinned` NOW:
+        // the button reflects it instantly and a second click reads "pinned" and
+        // unpins, instead of kicking off a duplicate clip. Hold off on persist()
+        // until the clip file exists, so MEMORY.md never lists a missing clip; if
+        // the user unpins mid-flight, `pinned` is already false and each step
+        // below bails (and cleans up a clip it may have written).
+        patchData(id, { pinned: true })
+        const stillPinned = (): boolean => {
+          const cur = get().nodes.find((n) => n.id === id)
+          return !!cur && isLink(cur) && !!cur.data.pinned
+        }
         void (async () => {
           const markdown = await extractPageMarkdown(id, url)
+          if (!stillPinned()) return // unpinned while extracting — nothing written yet
           if (!markdown) {
+            patchData(id, { pinned: false }) // roll back the optimistic flip
+            persist()
             // No live guest (tab minimized/hung) or the page wouldn't extract.
             useToastStore.getState().show('Open this page in its tab, then add it to memory')
             return
           }
           const ok = await window.api.link.clip(id, { title: node.data.title, url, markdown })
+          if (!stillPinned()) {
+            void window.api.link.unclip(id) // unpinned during clip — undo the file
+            return
+          }
           if (!ok) {
+            patchData(id, { pinned: false })
+            persist()
             useToastStore.getState().show('Couldn’t save this page to memory')
             return
           }
-          patchData(id, { pinned: true })
-          persist() // pin state + the regenerated MEMORY.md ride the canvas save
+          persist() // clip exists now → MEMORY.md can list it
           // Describe from the clip we just took (text summarizer, like a note).
           const description = await window.api.note.describe(markdown)
-          if (!description) return
-          const cur = get().nodes.find((n) => n.id === id)
-          if (cur && isLink(cur) && cur.data.pinned) {
-            patchData(id, { description })
-            persist()
-          }
+          if (!description || !stillPinned()) return
+          patchData(id, { description })
+          persist()
         })()
         return
       }
@@ -1483,16 +1543,23 @@ export const useCanvasStore = create<CanvasState>((set, get) => {
       persist()
     },
 
-    chatAbout: (sourceId) => {
-      // "Chat about this" from the half-sheet: spawn a fresh chat just right of
-      // the resource's canvas card and wire it as context (resource → chat), so
-      // the reading panel stays put on the doc while the new chat opens with its
-      // composer focused on the live canvas beside it. Files and links only —
-      // notes/chats don't read as a thing you "ask about" from the panel.
+    chatAbout: (sourceId, center) => {
+      // "Chat about this" from the half-sheet: spawn a fresh chat wired as
+      // context (resource → chat), so the reading panel stays put on the doc
+      // while the new chat opens with its composer focused on the live canvas
+      // beside it. Any readable resource — note, file, or link (not a chat).
+      // With `center`, drop the chat centered on that flow-space point (the
+      // panel's chat button passes the middle of the visible canvas); else
+      // fall back to just right of the source's card.
       const src = get().nodes.find((n) => n.id === sourceId)
-      if (!src || !(isFile(src) || isLink(src))) return null
-      const p = boxOf(src)
-      const chat = spawnNode({ x: p.x + p.w + DERIVE_GAP, y: p.y })
+      if (!src || !(isNote(src) || isFile(src) || isLink(src))) return null
+      const pos = center
+        ? { x: center.x - NODE_W / 2, y: center.y - EST_NODE_H / 2 }
+        : (() => {
+            const p = boxOf(src)
+            return { x: p.x + p.w + DERIVE_GAP, y: p.y }
+          })()
+      const chat = spawnNode(pos)
       get().addContextEdge(sourceId, chat.id)
       return chat.id
     },
@@ -1516,7 +1583,6 @@ export const useCanvasStore = create<CanvasState>((set, get) => {
       const node = get().nodes.find((n) => n.id === id)
       set((s) => ({
         ...(s.expanded?.id === id ? { expanded: null } : {}),
-        ...(s.panelTabs.includes(id) ? { panelTabs: s.panelTabs.filter((t) => t !== id) } : {}),
         nodes: s.nodes.filter((n) => n.id !== id),
         edges: s.edges.filter((e) => e.source !== id && e.target !== id)
       }))
@@ -1871,10 +1937,22 @@ function generateTitle(
   // Install the first answer we get and ignore the rest — the title turn might
   // resolve, reject, or hang (a stranded Haiku query would otherwise leave the
   // node on its "…" placeholder forever), so a timeout backs it with `fallback`.
+  // Mark the note as awaiting its title so the header shows the pulsing "…"
+  // only while this turn is actually pending — not for every unnamed note.
+  const setPending = (pending: boolean): void => {
+    if (!isNoteNode) return
+    useCanvasStore.setState((s) => ({
+      nodes: s.nodes.map((n) =>
+        n.id === nodeId ? ({ ...n, data: { ...n.data, titlePending: pending } } as CanvasNode) : n
+      )
+    }))
+  }
+  setPending(true)
   let done = false
   const install = (title: string | null): void => {
     if (done) return
     done = true
+    setPending(false)
     const next = title || fallback
     if (!next) return
     const cur = useCanvasStore.getState().nodes.find((n) => n.id === nodeId)
@@ -1925,7 +2003,12 @@ window.api.thread.onEvent((event) => {
       return {
         messages: [
           ...node.data.messages,
-          { id: msgId, role: 'assistant' as const, text: event.description, kind: 'research-spawn' as const }
+          {
+            id: msgId,
+            role: 'assistant' as const,
+            text: event.description,
+            kind: 'research-spawn' as const
+          }
         ]
       }
     })

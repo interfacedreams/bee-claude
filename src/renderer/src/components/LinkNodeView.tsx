@@ -13,7 +13,9 @@ import { usePanel } from '../lib/usePanel'
 import TabBrowser, { LinkSearch } from './TabBrowser'
 import DockedStub from './DockedStub'
 import PanelChips from './PanelChips'
+import NewChatButton from './NewChatButton'
 import TransformButton from './TransformButton'
+import Tooltip from './Tooltip'
 import TransformFrame from './TransformFrame'
 import {
   CHIP_BUTTON,
@@ -38,6 +40,10 @@ function LinkNodeView({ id, data, selected }: NodeProps<LinkNode>): React.JSX.El
   const toggleMinimize = useCanvasStore((s) => s.toggleMinimize)
   const setCtxConnectSource = useCanvasStore((s) => s.setCtxConnectSource)
   const armed = useCanvasStore((s) => s.ctxConnectSource === id)
+  // Shift held: float a transparent host-DOM layer over the live <webview> so a
+  // shift+click on the page surfaces as a normal DOM click (the guest otherwise
+  // swallows it) and the canvas's connect listener can read this node's id.
+  const shiftHeld = useCanvasStore((s) => s.shiftHeld)
   const { docked, mode, open, stubAction } = usePanel(id)
 
   const titleRef = useRef<HTMLInputElement>(null)
@@ -121,9 +127,9 @@ function LinkNodeView({ id, data, selected }: NodeProps<LinkNode>): React.JSX.El
           // faded to read as "optional — already in memory".
           ...(data.pinned
             ? {
-                width: 28,
-                height: 28,
-                right: -22,
+                width: 36,
+                height: 36,
+                right: -24,
                 opacity: 0.85,
                 display: 'flex',
                 alignItems: 'center',
@@ -134,6 +140,8 @@ function LinkNodeView({ id, data, selected }: NodeProps<LinkNode>): React.JSX.El
       >
         {data.pinned && <Brain className="pointer-events-none h-4 w-4 text-white" />}
       </Handle>
+      {/* armed: a "New Chat" pill appears to the right of the connector */}
+      {armed && <NewChatButton id={id} />}
 
       {!data.minimized && !docked && data.url && (
         <>
@@ -173,14 +181,11 @@ function LinkNodeView({ id, data, selected }: NodeProps<LinkNode>): React.JSX.El
         }`}
       >
         {!data.minimized && (
-          <button
-            type="button"
-            onClick={() => toggleMinimize(id)}
-            title="Minimize"
-            className={CHIP_BUTTON}
-          >
-            <Minus className="h-[25px] w-[25px]" />
-          </button>
+          <Tooltip label="Minimize">
+            <button type="button" onClick={() => toggleMinimize(id)} className={CHIP_BUTTON}>
+              <Minus className="h-[25px] w-[25px]" />
+            </button>
+          </Tooltip>
         )}
         <PanelChips mode={mode} open={open} />
         {bare ? (
@@ -249,32 +254,32 @@ function LinkNodeView({ id, data, selected }: NodeProps<LinkNode>): React.JSX.El
             />
           )}
           {!data.minimized && !docked && data.url && (
-            <button
-              type="button"
-              onClick={() => togglePin(id)}
-              title={
+            <Tooltip
+              label={
                 data.pinned
                   ? 'In project memory — every new chat sees this page'
                   : 'Add this page to project memory'
               }
-              className={`nodrag flex h-9 w-9 shrink-0 cursor-pointer items-center justify-center rounded-lg transition-colors ${
-                data.pinned
-                  ? 'bg-(--np-accent) text-white'
-                  : 'bg-(--np-chip) text-(--np-deep) hover:bg-(--np-accent)'
-              }`}
             >
-              <Brain className="h-[25px] w-[25px]" />
-            </button>
+              <button
+                type="button"
+                onClick={() => togglePin(id)}
+                className={`nodrag flex h-9 w-9 shrink-0 cursor-pointer items-center justify-center rounded-lg transition-colors ${
+                  data.pinned
+                    ? 'bg-(--np-accent) text-white'
+                    : 'bg-(--np-chip) text-(--np-deep) hover:bg-(--np-accent)'
+                }`}
+              >
+                <Brain className="h-[25px] w-[25px]" />
+              </button>
+            </Tooltip>
           )}
           {!data.minimized && !docked && <TransformButton id={id} />}
-          <button
-            type="button"
-            onClick={() => requestDelete(id)}
-            title="Delete this tab"
-            className={CHIP_BUTTON}
-          >
-            <Trash2 className="h-[25px] w-[25px]" />
-          </button>
+          <Tooltip label="Delete this tab">
+            <button type="button" onClick={() => requestDelete(id)} className={CHIP_BUTTON}>
+              <Trash2 className="h-[25px] w-[25px]" />
+            </button>
+          </Tooltip>
         </div>
       </div>
 
@@ -284,11 +289,19 @@ function LinkNodeView({ id, data, selected }: NodeProps<LinkNode>): React.JSX.El
         ) : (
           // The body is the page (scroll, not drag) — only the header band
           // moves the node, like chats and notes.
-          <div className="min-h-0 flex-1 overflow-hidden rounded-b-[13px]">
+          <div className="relative min-h-0 flex-1 overflow-hidden rounded-b-[13px]">
             {!data.url ? (
               <LinkSearch id={id} active={!data.minimized} />
             ) : (
               <TabBrowser id={id} url={data.url} focused={!!selected} />
+            )}
+            {/* Shift-to-connect catch layer: only while Shift is held, and only
+                over a live page (the guest swallows clicks; LinkSearch is plain
+                host DOM and needs no help). Transparent, but its crosshair hints
+                that a click now wires this page to a chat. The canvas listener
+                resolves the click to this node via the wrapping .react-flow__node. */}
+            {shiftHeld && data.url && (
+              <div className="nodrag absolute inset-0 z-10 cursor-crosshair" />
             )}
           </div>
         ))}

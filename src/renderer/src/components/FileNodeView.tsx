@@ -13,7 +13,9 @@ import { usePanel } from '../lib/usePanel'
 import FileBody from './FileBody'
 import DockedStub from './DockedStub'
 import PanelChips from './PanelChips'
+import NewChatButton from './NewChatButton'
 import TransformButton from './TransformButton'
+import Tooltip from './Tooltip'
 import TransformFrame from './TransformFrame'
 import {
   CHIP_BUTTON,
@@ -120,9 +122,9 @@ function FileNodeView({ id, data, selected }: NodeProps<FileNode>): React.JSX.El
           // "optional — already in memory".
           ...(data.pinned
             ? {
-                width: 28,
-                height: 28,
-                right: -22,
+                width: 36,
+                height: 36,
+                right: -24,
                 opacity: 0.85,
                 display: 'flex',
                 alignItems: 'center',
@@ -133,6 +135,8 @@ function FileNodeView({ id, data, selected }: NodeProps<FileNode>): React.JSX.El
       >
         {data.pinned && <Brain className="pointer-events-none h-4 w-4 text-white" />}
       </Handle>
+      {/* armed: a "New Chat" pill appears to the right of the connector */}
+      {armed && <NewChatButton id={id} />}
 
       {!data.minimized && (
         <>
@@ -173,14 +177,11 @@ function FileNodeView({ id, data, selected }: NodeProps<FileNode>): React.JSX.El
         }`}
       >
         {!data.minimized && (
-          <button
-            type="button"
-            onClick={() => toggleMinimize(id)}
-            title="Minimize"
-            className={CHIP_BUTTON}
-          >
-            <Minus className="h-[25px] w-[25px]" />
-          </button>
+          <Tooltip label="Minimize">
+            <button type="button" onClick={() => toggleMinimize(id)} className={CHIP_BUTTON}>
+              <Minus className="h-[25px] w-[25px]" />
+            </button>
+          </Tooltip>
         )}
         <PanelChips mode={mode} open={open} />
         {editingTitle && !data.minimized ? (
@@ -227,32 +228,32 @@ function FileNodeView({ id, data, selected }: NodeProps<FileNode>): React.JSX.El
             />
           )}
           {!data.minimized && (
-            <button
-              type="button"
-              onClick={() => togglePin(id)}
-              title={
+            <Tooltip
+              label={
                 data.pinned
                   ? 'In project memory — every new chat sees this file'
                   : 'Add to project memory'
               }
-              className={`nodrag flex h-9 w-9 shrink-0 cursor-pointer items-center justify-center rounded-lg transition-colors ${
-                data.pinned
-                  ? 'bg-(--np-accent) text-white'
-                  : 'bg-(--np-chip) text-(--np-deep) hover:bg-(--np-accent)'
-              }`}
             >
-              <Brain className="h-[25px] w-[25px]" />
-            </button>
+              <button
+                type="button"
+                onClick={() => togglePin(id)}
+                className={`nodrag flex h-9 w-9 shrink-0 cursor-pointer items-center justify-center rounded-lg transition-colors ${
+                  data.pinned
+                    ? 'bg-(--np-accent) text-white'
+                    : 'bg-(--np-chip) text-(--np-deep) hover:bg-(--np-accent)'
+                }`}
+              >
+                <Brain className="h-[25px] w-[25px]" />
+              </button>
+            </Tooltip>
           )}
           {!data.minimized && <TransformButton id={id} />}
-          <button
-            type="button"
-            onClick={() => requestDelete(id)}
-            title={isPdf ? 'Delete this PDF' : 'Delete this image'}
-            className={CHIP_BUTTON}
-          >
-            <Trash2 className="h-[25px] w-[25px]" />
-          </button>
+          <Tooltip label={isPdf ? 'Delete this PDF' : 'Delete this image'}>
+            <button type="button" onClick={() => requestDelete(id)} className={CHIP_BUTTON}>
+              <Trash2 className="h-[25px] w-[25px]" />
+            </button>
+          </Tooltip>
         </div>
       </div>
 

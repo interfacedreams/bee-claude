@@ -18,9 +18,6 @@ export function usePanel(id: string): {
 } {
   // Active (mounted) mode, or null when this node isn't the one on screen.
   const activeMode = useCanvasStore((s) => (s.expanded?.id === id ? s.expanded.mode : null))
-  // A backgrounded tab in the browsing strip is also "docked" — its card shows
-  // a stub so its webview is never mounted twice (a guest can live in one spot).
-  const inStrip = useCanvasStore((s) => s.expanded?.id !== id && s.panelTabs.includes(id))
   const open = useCallback(
     (next: PanelMode) => {
       const s = useCanvasStore.getState()
@@ -30,16 +27,11 @@ export function usePanel(id: string): {
     [id]
   )
   const collapse = useCallback(() => useCanvasStore.getState().collapseExpanded(), [])
-  // Clicking a node's docked stub: bring a backgrounded strip tab to the front;
-  // otherwise (the active node) just close the panel.
-  const stubAction = useCallback(() => {
-    const s = useCanvasStore.getState()
-    if (s.expanded?.id !== id && s.panelTabs.includes(id)) s.expandNode(id, 'panel')
-    else s.collapseExpanded()
-  }, [id])
+  // Clicking the active node's docked stub just closes the panel.
+  const stubAction = useCallback(() => useCanvasStore.getState().collapseExpanded(), [])
   return {
-    docked: activeMode !== null || inStrip,
-    mode: activeMode ?? (inStrip ? 'panel' : null),
+    docked: activeMode !== null,
+    mode: activeMode,
     open,
     collapse,
     stubAction

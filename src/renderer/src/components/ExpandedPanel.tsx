@@ -1,4 +1,5 @@
 import { Maximize2, MessageSquarePlus, PanelRight, X } from 'lucide-react'
+import { useReactFlow } from '@xyflow/react'
 import { useCanvasStore, isChat, isFile, isLink, isNote } from '../store/canvas'
 import { paletteFor } from '../lib/palette'
 import { CHIP_BUTTON, CHIP_BUTTON_ACTIVE } from '../lib/nodeChrome'
@@ -6,7 +7,6 @@ import ChatBody from './ChatBody'
 import NoteBody from './NoteBody'
 import FileBody from './FileBody'
 import TabBrowser, { LinkSearch } from './TabBrowser'
-import PanelTabStrip from './PanelTabStrip'
 
 // Same paper fill as the paper-bodied nodes (notes, files, tabs).
 const PAPER = '#FFFDF6'
@@ -34,7 +34,27 @@ export default function ExpandedPanel(): React.JSX.Element | null {
   const expandNode = useCanvasStore((s) => s.expandNode)
   const collapseExpanded = useCanvasStore((s) => s.collapseExpanded)
   const chatAbout = useCanvasStore((s) => s.chatAbout)
+  const { screenToFlowPosition, setCenter, getViewport } = useReactFlow()
   if (!node || !mode) return null
+
+  // Drop a "chat about this" chat in the middle of the canvas left of the
+  // panel. The React Flow pane is the flex sibling that fills everything not
+  // covered by the half-sheet, so the visible canvas spans client x 0 → that
+  // width; its center, projected into flow space, is where we want the chat.
+  // Then frame it: pan onto that center and come in to a readable 100% when
+  // zoomed out, never zooming out from closer (mirrors the double-click spawn).
+  const chatAboutCentered = (): void => {
+    const panelW = Math.min(window.innerWidth * 0.52, 880)
+    const center = screenToFlowPosition({
+      x: (window.innerWidth - panelW) / 2,
+      y: window.innerHeight / 2
+    })
+    chatAbout(node.id, center)
+    void setCenter(center.x, center.y, {
+      zoom: Math.max(getViewport().zoom, 1),
+      duration: 250
+    })
+  }
 
   const full = mode === 'full'
   // Full screen spans the whole window — far wider than a comfortable reading
@@ -123,14 +143,15 @@ export default function ExpandedPanel(): React.JSX.Element | null {
               {data.title || untitled}
             </span>
           )}
-          {/* "Chat about this": only for files/links in the half-sheet (full
-              screen is single-doc reading). Spawns a chat wired to read this
-              resource on the live canvas beside the panel — the C accelerator,
-              made visible (and the reliable path when a webview holds focus). */}
-          {!full && (isFile(node) || isLink(node)) && (
+          {/* "Chat about this": for any readable resource (note/file/link) in
+              the half-sheet (full screen is single-doc reading). Spawns a chat
+              wired to read this resource, dropped in the center of the live
+              canvas beside the panel — the reliable path when a webview holds
+              focus, and the visible twin of the C accelerator. */}
+          {!full && (isNote(node) || isFile(node) || isLink(node)) && (
             <button
               type="button"
-              onClick={() => chatAbout(node.id)}
+              onClick={chatAboutCentered}
               title="Chat about this (C)"
               className={CHIP_BUTTON}
             >
@@ -139,10 +160,6 @@ export default function ExpandedPanel(): React.JSX.Element | null {
           )}
         </div>
       </div>
-
-      {/* the browsing strip — present only during a multi-link session, and
-          only in the half-sheet (full screen is single-page focused reading) */}
-      {!full && <PanelTabStrip />}
 
       {chat ? (
         <div className={`flex min-h-0 flex-1 flex-col px-2 ${reading}`}>
