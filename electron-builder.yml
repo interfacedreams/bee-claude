@@ -11,6 +11,10 @@ files:
   - '!{tsconfig.json,tsconfig.node.json,tsconfig.web.json}'
 asarUnpack:
   - resources/**
+  # The Agent SDK ships a native binary it spawns at runtime; native
+  # executables can't run from inside an asar archive, so unpack the package.
+  - node_modules/@anthropic-ai/claude-agent-sdk/**
+  - node_modules/@anthropic-ai/claude-agent-sdk-*/**
 win:
   executableName: bee-claude
 nsis:

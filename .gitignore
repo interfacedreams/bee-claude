@@ -15,3 +15,4 @@ out
 # canvas data (dev repo)
 .canvas/
 PLAN.md
+*.tsbuildinfo

@@ -1205,6 +1205,33 @@ function registerThreadIpc(): void {
   // File-mutating tools a note session may only point at its own file.
   const EDIT_TOOLS = new Set(['Edit', 'Write', 'MultiEdit', 'NotebookEdit'])
 
+  // Tools that take a filesystem path. A PreToolUse hook keeps every one of
+  // them inside the project folder (see the chat turn's `hooks`).
+  const FILE_PATH_TOOLS = new Set(['Read', 'Glob', 'Grep', 'Edit', 'Write', 'MultiEdit'])
+
+  // Whether a tool call clears the folder boundary. Non-file tools (WebSearch,
+  // WebFetch, MCP, …) have no path to escape, so they're trivially OK; a file
+  // tool is OK only when its target path resolves inside `root`. Lexical
+  // containment is enough: Bash is disallowed, so there's no way to plant a
+  // symlink that escapes, and new-file writes (no real path on disk yet) must
+  // not throw. A file tool with no path argument (e.g. a bare Glob pattern →
+  // defaults to cwd) is in-bounds by definition.
+  const allowedByFolderScope = (
+    root: string,
+    toolName: string,
+    input: Record<string, unknown>
+  ): boolean => {
+    if (!FILE_PATH_TOOLS.has(toolName)) return true
+    const raw =
+      (typeof input.file_path === 'string' && input.file_path) ||
+      (typeof input.path === 'string' && input.path) ||
+      null
+    if (!raw) return true
+    const abs = isAbsolute(raw) ? resolve(raw) : resolve(root, raw)
+    const rel = relative(root, abs)
+    return rel === '' || (!rel.startsWith('..') && !isAbsolute(rel))
+  }
+
   ipcMain.handle(
     'thread:send',
     async (
@@ -1571,6 +1598,36 @@ function registerThreadIpc(): void {
                   forwardSubagentText: true
                 }
               : {}),
+            // This is a thinking canvas, not a coding agent: it never needs a
+            // shell. Hard-removing the code-execution tools turns the file
+            // boundary below into a real wall (nothing can run a script that
+            // opens files out of band) and means a non-coder can't be prompted
+            // into approving an arbitrary command. NotebookEdit is unused.
+            disallowedTools: ['Bash', 'BashOutput', 'KillShell', 'NotebookEdit'],
+            // Filesystem boundary: deny any file tool whose path escapes the
+            // project folder. A PreToolUse deny bypasses canUseTool and fires
+            // even for auto-approved reads, so this — not canUseTool — is the
+            // wall (canUseTool only ever sees a subset of file ops).
+            hooks: {
+              PreToolUse: [
+                {
+                  hooks: [
+                    async (input) => {
+                      if (input.hook_event_name !== 'PreToolUse') return {}
+                      const ti = (input.tool_input ?? {}) as Record<string, unknown>
+                      if (allowedByFolderScope(root, input.tool_name, ti)) return {}
+                      return {
+                        hookSpecificOutput: {
+                          hookEventName: 'PreToolUse',
+                          permissionDecision: 'deny',
+                          permissionDecisionReason: `${input.tool_name} blocked: file paths must stay inside the project folder.`
+                        }
+                      }
+                    }
+                  ]
+                }
+              ]
+            },
             settingSources: ['project'], // required or CLAUDE.md is not loaded
             // Notes stay in default mode so every edit routes through canUseTool,
             // where it's checked against the note's own file.
