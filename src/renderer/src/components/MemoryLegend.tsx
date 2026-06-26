@@ -7,11 +7,12 @@ import {
   Globe,
   Image as ImageIcon,
   Info,
+  MessageSquare,
   Minus,
   Plus,
   X
 } from 'lucide-react'
-import { useCanvasStore, isNote, isFile, isLink, type CanvasNode } from '../store/canvas'
+import { useCanvasStore, isNote, isFile, isLink, isChat, type CanvasNode } from '../store/canvas'
 import { paletteFor } from '../lib/palette'
 import { usePersistedCollapse } from '../lib/usePersistedCollapse'
 import Tooltip from './Tooltip'
@@ -42,10 +43,11 @@ export default function MemoryLegend(): React.JSX.Element | null {
   const [collapsed, setCollapsed] = usePersistedCollapse('memory')
   const [explain, setExplain] = useState(false)
 
-  // Every pinned resource — notes, files (images/PDFs) and clipped web pages —
-  // makes up the memory index; they share this list in canvas order.
+  // Every pinned resource — notes, files (images/PDFs), clipped web pages and
+  // chat transcripts — makes up the memory index; they share this list in
+  // canvas order.
   const pinned = useMemo(
-    () => nodes.filter((n) => (isNote(n) || isFile(n) || isLink(n)) && n.data.pinned),
+    () => nodes.filter((n) => (isNote(n) || isFile(n) || isLink(n) || isChat(n)) && n.data.pinned),
     [nodes]
   )
   // The always-present CLAUDE.md node — surfaced here as a jump link so the
@@ -139,21 +141,26 @@ export default function MemoryLegend(): React.JSX.Element | null {
         <div className="min-h-0 max-h-[160px] overflow-y-auto">
           {pinned.map((n) => {
             // Icon by kind so the list reads at a glance: brain for a note,
-            // picture for an image, document for a PDF, globe for a web page.
-            const Icon = isLink(n)
-              ? Globe
-              : isFile(n)
-                ? n.data.kind === 'pdf'
-                  ? FileText
-                  : ImageIcon
-                : Brain
-            const untitled = isLink(n)
-              ? 'Untitled tab'
-              : isFile(n)
-                ? n.data.kind === 'pdf'
-                  ? 'Untitled PDF'
-                  : 'Untitled image'
-                : 'Untitled note'
+            // picture for an image, document for a PDF, globe for a web page,
+            // speech bubble for a chat.
+            const Icon = isChat(n)
+              ? MessageSquare
+              : isLink(n)
+                ? Globe
+                : isFile(n)
+                  ? n.data.kind === 'pdf'
+                    ? FileText
+                    : ImageIcon
+                  : Brain
+            const untitled = isChat(n)
+              ? 'Untitled chat'
+              : isLink(n)
+                ? 'Untitled tab'
+                : isFile(n)
+                  ? n.data.kind === 'pdf'
+                    ? 'Untitled PDF'
+                    : 'Untitled image'
+                  : 'Untitled note'
             return (
               <button
                 key={n.id}
@@ -215,12 +222,13 @@ function MemoryExplainer({ onClose }: { onClose: () => void }): React.JSX.Elemen
           <p className="text-[13px] leading-relaxed text-neutral-700">
             Claude can already read any file in this folder on its own — but with many files it
             can&rsquo;t tell which ones matter, or what&rsquo;s inside, without opening each. Memory
-            is a curated table of contents that solves both. Add a note, image, PDF or web page with
-            the brain icon on its header and it gets a line in <code className="font-mono">MEMORY.md</code>,
-            an index handed to every new chat. Each line carries a short description of the
-            contents, so the agent knows your key resources exist, what&rsquo;s in them, and opens
-            the right ones on demand (it reads images and PDFs too). A web page is clipped to text
-            when you add it, so it stays readable after the tab closes.
+            is a curated table of contents that solves both. Add a note, image, PDF, web page or
+            chat with the brain icon on its header and it gets a line in{' '}
+            <code className="font-mono">MEMORY.md</code>, an index handed to every new chat. Each
+            line carries a short description of the contents, so the agent knows your key resources
+            exist, what&rsquo;s in them, and opens the right ones on demand (it reads images and
+            PDFs too). A web page is clipped to text when you add it, so it stays readable after the
+            tab closes.
           </p>
           <pre className="mt-3 overflow-x-auto rounded-[6px] bg-[#F7F2DF] px-3 py-2.5 text-[11px] leading-snug text-neutral-700">
             {`# Project memory
@@ -231,9 +239,8 @@ function MemoryExplainer({ onClose }: { onClose: () => void }): React.JSX.Elemen
           </pre>
           <p className="mt-3 text-[13px] leading-relaxed text-neutral-700">
             The description is generated for you. Remove a resource from memory and its line drops
-            back out.{' '}
-            <code className="font-mono">CLAUDE.md</code> is different — it&rsquo;s always in context
-            in full, no marking needed.
+            back out. <code className="font-mono">CLAUDE.md</code> is different — it&rsquo;s always
+            in context in full, no marking needed.
           </p>
         </div>
       </div>

@@ -98,6 +98,17 @@ const api = {
     // Remove a link's clip — on unpin or delete.
     unclip: (nodeId: string): Promise<void> => ipcRenderer.invoke('link:unclip', nodeId)
   },
+  chat: {
+    // Snapshot a pinned chat's transcript to a hidden clip the agent can Read.
+    // The renderer builds the transcript (its messages live there); main writes it.
+    clipMemory: (
+      nodeId: string,
+      payload: { title?: string; transcript: string }
+    ): Promise<boolean> => ipcRenderer.invoke('chat:clipMemory', nodeId, payload),
+    // Remove a chat's transcript clip — on unpin or delete.
+    unclipMemory: (nodeId: string): Promise<void> =>
+      ipcRenderer.invoke('chat:unclipMemory', nodeId)
+  },
   thread: {
     send: (args: ThreadSendArgs): Promise<void> => ipcRenderer.invoke('thread:send', args),
     title: (conversation: string): Promise<string | null> =>

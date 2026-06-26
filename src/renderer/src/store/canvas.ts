@@ -64,6 +64,13 @@ export interface ChatData {
   savedHeight?: number // explicit height to restore when un-minimizing
   growthCap?: number // auto-grow ceiling (flow px), sized to fit the screen at send time
   sessionId?: string // Agent SDK session; set after the first turn, used for resume
+  // Pinned into the project memory index — every new chat sees this chat's
+  // transcript clip in MEMORY.md and can read it on demand. The clip is
+  // re-snapshotted as the conversation grows.
+  pinned?: boolean
+  // 1-3 sentence index description (Haiku-generated, cached), same as a note's.
+  // The MEMORY.md line for a pinned chat uses it.
+  description?: string
   forkOf?: ForkRef // pending fork; consumed by the first send, then cleared
   focusDraft?: boolean // autofocus the composer when the node mounts
   lastUsage?: TurnUsage // tokens/cost of the most recent turn
@@ -179,6 +186,14 @@ export const isNote = (n: CanvasNode): n is NoteNode => n.type === 'note'
 export const isFile = (n: CanvasNode): n is FileNode => n.type === 'file'
 export const isLink = (n: CanvasNode): n is LinkNode => n.type === 'link'
 export const isLabel = (n: CanvasNode): n is LabelNode => n.type === 'label'
+
+// A pinned chat's transcript, dumped to markdown for its memory clip. Empty
+// (placeholder) messages are skipped so the clip never carries blank turns.
+export const chatTranscript = (messages: Message[]): string =>
+  messages
+    .filter((m) => m.text.trim())
+    .map((m) => `## ${m.role === 'user' ? 'User' : 'Assistant'}\n\n${m.text.trim()}`)
+    .join('\n\n')
 
 // A file node's frame is explicit (width AND height) from birth so resizing
 // can keep the aspect ratio. The header band is part of that frame.
@@ -509,11 +524,14 @@ interface CanvasState {
   setViewVersion: (id: string, index: number | undefined) => void
   restoreVersion: (id: string, index: number) => Promise<void>
   // Pin/unpin a resource into the project memory index. Notes and files just
-  // flip the flag; a link clips its live page to a hidden markdown file first.
-  // Pinning kicks off a 1-3 sentence index description.
+  // flip the flag; a link clips its live page to a hidden markdown file first,
+  // a chat clips its transcript. Pinning kicks off a 1-3 sentence description.
   togglePin: (id: string) => void
-  // Debounced regeneration of a pinned note's 1-3 sentence index description
-  // (Haiku one-shot). A no-op for unpinned or empty notes.
+  // Re-snapshot a pinned chat's transcript clip + refresh its index blurb as the
+  // conversation grows, so memory tracks the live chat. A no-op if not pinned.
+  refreshChatMemory: (id: string) => void
+  // Debounced regeneration of a pinned note's/chat's 1-3 sentence index
+  // description (Haiku one-shot). A no-op for unpinned or empty nodes.
   scheduleDescribe: (id: string) => void
   // Apply an agent's on-disk edit that was parked behind the unsaved-edits
   // guard (the "Reload" action on a note).
@@ -628,7 +646,12 @@ export const useCanvasStore = create<CanvasState>((set, get) => {
                   ? { kind: 'label' as const }
                   : n.data.kind === 'research'
                     ? { kind: 'research' as const }
-                    : {}),
+                    : {
+                        // A plain chat (no `kind`) — only its memory metadata rides
+                        // canvas.json; the transcript saves to its own thread file.
+                        ...(n.data.pinned ? { pinned: true } : {}),
+                        ...(n.data.description ? { description: n.data.description } : {})
+                      }),
           position: n.position,
           width: n.width ?? NODE_W,
           ...(height != null ? { height } : {}),
@@ -1197,7 +1220,11 @@ export const useCanvasStore = create<CanvasState>((set, get) => {
           // the card on the next load. (Auto-placed cards derive their id from
           // the filename, so a card that's gone but a file that isn't comes back.)
           if (node.data.file) void window.api.file.delete(node.data.file)
-        } else void window.api.canvas.deleteThread(nodeId)
+        } else {
+          void window.api.canvas.deleteThread(nodeId)
+          // A pinned chat left a transcript clip behind — drop it too.
+          if (node && isChat(node) && node.data.pinned) void window.api.chat.unclipMemory(nodeId)
+        }
       }
       // Write the layout immediately rather than through the 500ms debounce, so
       // a quick close/reopen after a delete can't drop the save.
@@ -1486,6 +1513,49 @@ export const useCanvasStore = create<CanvasState>((set, get) => {
         return
       }
 
+      // Chats have no file of their own — like a link, joining memory snapshots
+      // the transcript to a hidden clip the agent Reads on demand. Optimistic
+      // flip + stillPinned guard mirror the link flow; the transcript is already
+      // in hand (renderer-held messages), so there's no async extraction step.
+      if (isChat(node)) {
+        if (node.data.kind === 'research') return // display-only researcher transcript
+        if (node.data.pinned) {
+          patchData(id, { pinned: false, description: undefined })
+          persist()
+          void window.api.chat.unclipMemory(id)
+          return
+        }
+        const transcript = chatTranscript(node.data.messages)
+        if (!transcript.trim()) {
+          useToastStore.getState().show('This chat is empty — nothing to remember yet')
+          return
+        }
+        patchData(id, { pinned: true })
+        const stillPinned = (): boolean => {
+          const cur = get().nodes.find((n) => n.id === id)
+          return !!cur && isChat(cur) && !!cur.data.pinned
+        }
+        void (async () => {
+          const ok = await window.api.chat.clipMemory(id, { title: node.data.title, transcript })
+          if (!stillPinned()) {
+            void window.api.chat.unclipMemory(id) // unpinned during write — undo the file
+            return
+          }
+          if (!ok) {
+            patchData(id, { pinned: false })
+            persist()
+            useToastStore.getState().show('Couldn’t save this chat to memory')
+            return
+          }
+          persist() // clip exists now → MEMORY.md can list it
+          const description = await window.api.note.describe(transcript)
+          if (!description || !stillPinned()) return
+          patchData(id, { description })
+          persist()
+        })()
+        return
+      }
+
       // Notes and files (images/PDFs) are already on disk — just flip the flag.
       if (!isNote(node) && !isFile(node)) return
       const pinned = !node.data.pinned
@@ -1499,6 +1569,19 @@ export const useCanvasStore = create<CanvasState>((set, get) => {
           get().scheduleDescribe(id)
         }
       }
+    },
+
+    refreshChatMemory: (id) => {
+      const node = get().nodes.find((n) => n.id === id)
+      if (!node || !isChat(node) || !node.data.pinned) return
+      const transcript = chatTranscript(node.data.messages)
+      if (!transcript.trim()) return
+      // Keep the clip the agent Reads current with every turn — that's the full
+      // content. The 1-3 sentence blurb only describes the opening of the chat
+      // (describe sees the first slice), so generate it once and keep it; no need
+      // to re-run Haiku on every reply.
+      void window.api.chat.clipMemory(id, { title: node.data.title, transcript })
+      if (!node.data.description) get().scheduleDescribe(id)
     },
 
     scheduleDescribe: (id) => {
@@ -1516,7 +1599,7 @@ export const useCanvasStore = create<CanvasState>((set, get) => {
             if (!description) return
             const cur = get().nodes.find((n) => n.id === id)
             // The node may have been unpinned or deleted while Haiku ran.
-            if (cur && (isNote(cur) || isFile(cur)) && cur.data.pinned) {
+            if (cur && (isNote(cur) || isFile(cur) || isChat(cur)) && cur.data.pinned) {
               patchData(id, { description })
               persist()
             }
@@ -1527,6 +1610,13 @@ export const useCanvasStore = create<CanvasState>((set, get) => {
             void window.api.note.describe(content).then(commit)
           } else if (isFile(node) && node.data.file) {
             void window.api.file.describe(node.data.file).then(commit)
+          } else if (isChat(node)) {
+            // Chats summarize like notes — a text turn over the transcript. The
+            // describe handler caps it at 1-3 sentences, so even a long chat
+            // gets a terse index line.
+            const transcript = chatTranscript(node.data.messages)
+            if (!transcript.trim()) return
+            void window.api.note.describe(transcript).then(commit)
           }
         }, 1500)
       )
@@ -2084,6 +2174,8 @@ export const useCanvasStore = create<CanvasState>((set, get) => {
                 sessionId: p.sessionId,
                 forkOf: p.forkOf,
                 injectedImages: p.injectedImages,
+                ...(p.pinned ? { pinned: true } : {}),
+                ...(p.description ? { description: p.description } : {}),
                 updatedAt: p.updatedAt,
                 ...(p.kind === 'research' ? { kind: 'research' as const } : {})
               }),
@@ -2360,6 +2452,15 @@ window.api.thread.onEvent((event) => {
       const node = useCanvasStore.getState().nodes.find((n) => n.id === event.nodeId)
       if (node && isNote(node) && node.data.pinned) {
         useCanvasStore.getState().scheduleDescribe(event.nodeId)
+      }
+    }
+
+    // A turn extended a pinned chat — re-snapshot its transcript clip (and blurb)
+    // so memory reflects the conversation as it is now, not when it was pinned.
+    if (event.ok) {
+      const node = useCanvasStore.getState().nodes.find((n) => n.id === event.nodeId)
+      if (node && isChat(node) && node.data.pinned) {
+        useCanvasStore.getState().refreshChatMemory(event.nodeId)
       }
     }
 

@@ -7,7 +7,7 @@ import {
   useStoreApi,
   type NodeProps
 } from '@xyflow/react'
-import { Minus, Trash2, TriangleAlert } from 'lucide-react'
+import { Brain, Minus, Trash2, TriangleAlert } from 'lucide-react'
 import { useCanvasStore, MAX_NODE_H, type ChatNode } from '../store/canvas'
 import { paletteFor } from '../lib/palette'
 import { usePanel } from '../lib/usePanel'
@@ -31,6 +31,7 @@ import TitleEditSlot from './TitleEditSlot'
 function ChatNodeView({ id, data, selected, height }: NodeProps<ChatNode>): React.JSX.Element {
   const setTitle = useCanvasStore((s) => s.setTitle)
   const requestDelete = useCanvasStore((s) => s.requestDelete)
+  const togglePin = useCanvasStore((s) => s.togglePin)
   const toggleMinimize = useCanvasStore((s) => s.toggleMinimize)
   const setCtxConnectSource = useCanvasStore((s) => s.setCtxConnectSource)
   const armed = useCanvasStore((s) => s.ctxConnectSource === id)
@@ -292,6 +293,27 @@ function ChatNodeView({ id, data, selected, height }: NodeProps<ChatNode>): Reac
             />
           )}
           {!data.minimized && <TransformButton id={id} />}
+          {!data.minimized && !isResearch && (
+            <Tooltip
+              label={
+                data.pinned
+                  ? 'In project memory — every new chat sees this chat'
+                  : 'Add to project memory'
+              }
+            >
+              <button
+                type="button"
+                onClick={() => togglePin(id)}
+                className={`nodrag flex h-9 w-9 shrink-0 cursor-pointer items-center justify-center rounded-lg transition-colors ${
+                  data.pinned
+                    ? 'bg-(--np-accent) text-white'
+                    : 'bg-(--np-chip) text-(--np-deep) hover:bg-(--np-accent)'
+                }`}
+              >
+                <Brain className="h-[25px] w-[25px]" />
+              </button>
+            </Tooltip>
+          )}
           <Tooltip label="Delete this chat">
             <button type="button" onClick={() => requestDelete(id)} className={CHIP_BUTTON}>
               <Trash2 className="h-[25px] w-[25px]" />

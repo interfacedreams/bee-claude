@@ -2158,6 +2158,44 @@ function registerNoteIpc(): void {
       // never clipped
     }
   })
+
+  // Save a pinned chat's transcript. Like a link clip, a chat has no file of its
+  // own to Read — its messages live in the renderer — so memory snapshots the
+  // conversation to a hidden markdown file under .canvas/clips that the agent
+  // opens on demand. The renderer builds the transcript and re-clips as the chat
+  // grows; the short index blurb is generated separately (note:describe).
+  ipcMain.handle(
+    'chat:clipMemory',
+    async (
+      _event,
+      nodeId: string,
+      payload: { title?: string; transcript: string }
+    ): Promise<boolean> => {
+      const root = folderRoot
+      if (!root || !isSafeNodeId(nodeId)) return false
+      const { title, transcript } = payload ?? {}
+      if (typeof transcript !== 'string' || !transcript.trim()) return false
+      try {
+        await fs.mkdir(clipsDirFor(root), { recursive: true })
+        const header = `# ${title?.trim() || 'Chat'}\n\n> Saved chat transcript\n\n---\n\n`
+        await fs.writeFile(clipFileFor(root, nodeId), header + transcript.trim() + '\n')
+        return true
+      } catch {
+        return false
+      }
+    }
+  )
+
+  // Drop a chat's transcript clip — on unpin, or when the node is deleted.
+  ipcMain.handle('chat:unclipMemory', async (_event, nodeId: string): Promise<void> => {
+    const root = folderRoot
+    if (!root || !isSafeNodeId(nodeId)) return
+    try {
+      await fs.unlink(clipFileFor(root, nodeId))
+    } catch {
+      // never clipped
+    }
+  })
 }
 
 // Layout/metadata only — transcripts and note bodies live in their own files.
@@ -2199,21 +2237,22 @@ function buildMemoryIndex(doc: CanvasDoc): string {
   const lines = doc.nodes.flatMap((node) => {
     if (!node.pinned) return []
     // Notes are addressed through the id→filename map (their file is retitled
-    // independently); files carry their own relative path; links point at the
-    // hidden clip captured when they were pinned.
+    // independently); files carry their own relative path; links and chats point
+    // at the hidden clip captured when they were pinned (a chat's clip is its
+    // transcript dumped to markdown). A chat carries no `kind` (omitted == chat).
     const file =
       node.kind === 'note'
         ? noteFiles.get(node.id)
         : node.kind === 'file'
           ? node.file
-          : node.kind === 'link'
+          : node.kind === 'link' || node.kind === undefined
             ? clipRelFor(node.id)
             : undefined
     if (!file) return []
     const title =
       node.title?.trim() ||
       (node.kind === 'link' ? node.url : undefined) ||
-      file.replace(/\.[^.]+$/, '')
+      (node.kind === undefined ? 'Chat' : file.replace(/\.[^.]+$/, ''))
     const desc = node.description?.trim()
     return [`- [${title}](${file})${desc ? ` — ${desc}` : ''}`]
   })

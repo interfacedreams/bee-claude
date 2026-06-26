@@ -168,7 +168,13 @@ function PendingArrow({ sourceId }: { sourceId: string }): React.JSX.Element | n
   // finished, and the knob stopPropagation's besides.
   useEffect(() => {
     const onCommit = (e: PointerEvent): void => {
+      // A tap on a ctx-handle knob arms/disarms through its own onClick — never
+      // let this window listener hijack that tap (it would tear the arm right
+      // back down). The knob used to shield itself with stopPropagation, but
+      // that only works against a bubbling 'click'; we're a capture pointerup.
+      if ((e.target as HTMLElement)?.closest?.('.ctx-handle')) return
       const src = useCanvasStore.getState().nodes.find((n) => n.id === sourceId)
+      const onPane = (e.target as HTMLElement)?.classList?.contains('react-flow__pane')
       if (snapRef.current) {
         // Snapped onto a target. A chat source drives a note (output edge) but
         // feeds another chat as context; a resource source always commits a
@@ -176,20 +182,27 @@ function PendingArrow({ sourceId }: { sourceId: string }): React.JSX.Element | n
         const tgt = useCanvasStore.getState().nodes.find((n) => n.id === snapRef.current)
         if (src && isChat(src) && tgt && isNote(tgt)) addOutputEdge(sourceId, snapRef.current)
         else addContextEdge(sourceId, snapRef.current)
-      } else if (
-        src &&
-        isChat(src) &&
-        (e.target as HTMLElement)?.classList?.contains('react-flow__pane')
-      ) {
-        // No target, and the click landed on empty canvas: fork the chat at the
-        // drop point. forkChat no-ops if the chat has no tip yet, so an un-run
-        // chat just disarms. Clicks on other UI (buttons, nodes) only cancel.
+      } else if (src && onPane) {
+        // No target, click on empty canvas. A chat forks at the drop point; a
+        // resource drops a fresh chat there, wired to it as context (the click
+        // equivalent of pressing C while armed). forkChat no-ops on an un-run
+        // chat, which then just disarms.
         const p = screenToFlowPosition({ x: e.clientX, y: e.clientY })
-        const forkId = forkChat(sourceId, { x: p.x, y: p.y })
-        // Glide to center on the newborn fork — same easing as placing a chat
-        // with C (come in to 100% when zoomed out, never zoom out from closer).
-        if (forkId)
-          void setCenter(p.x + NODE_W / 2, p.y + 150, {
+        let placed: CanvasNode | null = null
+        if (isChat(src)) {
+          const forkId = forkChat(sourceId, { x: p.x, y: p.y })
+          placed = forkId
+            ? (useCanvasStore.getState().nodes.find((n) => n.id === forkId) ?? null)
+            : null
+        } else if (isNote(src) || isFile(src) || isLink(src)) {
+          const node = addNodeAt({ x: p.x - NODE_W / 2, y: p.y - DROP_ANCHOR_Y })
+          addContextEdge(sourceId, node.id)
+          placed = node
+        }
+        // Glide to center on the newborn node — same framing as placing with C
+        // (PlacementOverlay): center on the node's own position, not the cursor.
+        if (placed)
+          void setCenter(placed.position.x + NODE_W / 2, placed.position.y + 150, {
             zoom: Math.max(getZoom(), 1),
             duration: 250
           })
