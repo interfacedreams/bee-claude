@@ -7,7 +7,7 @@ A canvas UI for chatting, taking notes, and reading PDFs/webpages
 ## Setup
 
 ```bash
-npm install --legacy-peer-deps
+npm install
 npm run dev
 ```
 
