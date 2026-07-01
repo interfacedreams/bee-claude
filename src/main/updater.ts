@@ -79,13 +79,22 @@ export function initAutoUpdater(): void {
       })
       .then(({ response }) => {
         if (response !== 0) return
-        // (isSilent=false, isForceRunAfter=true): install and relaunch into
-        // the new version. Squirrel's ShipIt only swaps the bundle once THIS
-        // process dies — and on macOS quitAndInstall can leave the process
-        // alive (window closes, process lingers), which strands the install.
-        // Force an exit shortly after as a guaranteed-termination fallback.
-        autoUpdater.quitAndInstall(false, true)
-        setTimeout(() => app.exit(0), 2000)
+        // Hand off to Squirrel. quitAndInstall submits the ShipIt helper to
+        // launchd, then terminates this process; ShipIt waits for us to die,
+        // swaps the bundle in /Applications, and relaunches.
+        //
+        // Do NOT app.exit() here as a "fallback": a hard exit races the launchd
+        // handoff and strands the install (bundle staged but never swapped),
+        // which is exactly what we saw — /Applications stuck on the old version
+        // with no ShipIt.log. If the native terminate is ever cancelled and the
+        // process lingers, autoInstallOnAppQuit (set above) still installs it on
+        // the next ordinary quit, so the update is never lost.
+        //
+        // NOTE: this only works when the installed bundle is not quarantined.
+        // A com.apple.quarantine flag makes macOS translocate the app and blocks
+        // the in-place swap, so the "update" lands on a throwaway copy and
+        // reverts on next launch. Signed+notarized DMG installs avoid this.
+        setImmediate(() => autoUpdater.quitAndInstall(false, true))
       })
       .catch(() => {})
   })
