@@ -5,10 +5,15 @@
 // (large) update if the user opts in. Signed + notarized builds install
 // cleanly on restart.
 import { app, dialog, BrowserWindow } from 'electron'
+import { spawn } from 'child_process'
 import electronUpdater from 'electron-updater'
 import log from 'electron-log'
 
 const { autoUpdater } = electronUpdater
+
+// The launchd label Squirrel.Mac registers its ShipIt install helper under:
+// "<bundle id>.ShipIt" (bundle id = appId in electron-builder.yml).
+const SHIPIT_JOB = 'com.thinkingcanvas.app.ShipIt'
 
 // Check at startup and then every few hours while the app stays open.
 const CHECK_INTERVAL_MS = 1000 * 60 * 60 * 4
@@ -83,17 +88,21 @@ export function initAutoUpdater(): void {
     // launchd, then terminates this process; ShipIt waits for us to die,
     // swaps the bundle in /Applications, and relaunches.
     //
-    // Do NOT app.exit() here as a "fallback": a hard exit races the launchd
-    // handoff and strands the install (bundle staged but never swapped),
-    // which is exactly what we saw — /Applications stuck on the old version
-    // with no ShipIt.log. If the native terminate is ever cancelled and the
-    // process lingers, autoInstallOnAppQuit (set above) still installs it on
-    // the next ordinary quit, so the update is never lost.
+    // On macOS 26 the submitted job registers but launchd never actually
+    // starts it (`launchctl print` shows runs = 0; the staged update just
+    // sits there and the app "restarts" into the old version). ShipIt itself
+    // works — running it by hand installs perfectly — so leave behind a
+    // detached kicker that starts the job right after this process exits.
+    // Where launchd does start the job on its own, the kickstart is a no-op.
     //
-    // NOTE: this only works when the installed bundle is not quarantined.
-    // A com.apple.quarantine flag makes macOS translocate the app and blocks
-    // the in-place swap, so the "update" lands on a throwaway copy and
-    // reverts on next launch. Signed+notarized DMG installs avoid this.
+    // Do NOT app.exit() here as a "fallback": a hard exit races the launchd
+    // handoff and strands the install before the job is even submitted.
+    const kicker = spawn(
+      '/bin/sh',
+      ['-c', `sleep 2; /bin/launchctl kickstart gui/${process.getuid?.() ?? 501}/${SHIPIT_JOB}`],
+      { detached: true, stdio: 'ignore' }
+    )
+    kicker.unref()
     setImmediate(() => autoUpdater.quitAndInstall(false, true))
   })
 
