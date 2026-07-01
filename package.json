@@ -17,7 +17,7 @@
     "build:win": "npm run build && electron-builder --win",
     "build:mac": "electron-vite build && electron-builder --mac",
     "release:tag": "git tag v$npm_package_version 2>/dev/null; git push origin v$npm_package_version",
-    "release:mac": "npm run release:tag && electron-vite build && electron-builder --mac --publish always",
+    "release:mac": "npm run release:tag && node scripts/ensure-release.mjs && electron-vite build && electron-builder --mac --publish always",
     "build:linux": "electron-vite build && electron-builder --linux"
   },
   "dependencies": {
