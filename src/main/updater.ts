@@ -6,6 +6,7 @@
 // cleanly on restart.
 import { app, dialog, BrowserWindow } from 'electron'
 import electronUpdater from 'electron-updater'
+import log from 'electron-log'
 
 const { autoUpdater } = electronUpdater
 
@@ -17,6 +18,13 @@ export function initAutoUpdater(): void {
   // no app-update.yml, so skip entirely to avoid noisy errors.
   if (!app.isPackaged) return
 
+  // Persistent updater log — packaged builds have no console, and every
+  // install failure so far has been a black box. electron-log writes to
+  // ~/Library/Logs/thinking-canvas/main.log, including Squirrel's own
+  // messages, so a stranded install finally says why.
+  log.transports.file.level = 'info'
+  autoUpdater.logger = log
+
   // Ask before pulling the update; download only on the user's say-so. If they
   // download but don't restart, it still installs on the next quit.
   autoUpdater.autoDownload = false
@@ -26,7 +34,7 @@ export function initAutoUpdater(): void {
   let prompting = false
 
   autoUpdater.on('error', (err) => {
-    console.error('[updater] error:', err)
+    log.error('[updater] error:', err)
   })
 
   // Feed download progress to the Dock icon and the renderer's in-app pill so
