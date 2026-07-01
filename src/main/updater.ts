@@ -46,7 +46,9 @@ export function initAutoUpdater(): void {
     win.webContents.send('update:progress', { percent: p.percent, done: false })
   })
 
-  // A newer version exists — offer it. Downloads only if the user clicks.
+  // A newer version exists — offer it. One consent up front: accepting
+  // downloads the update and restarts into it when the bytes are in, with no
+  // second dialog. Declining just waits for the next check.
   autoUpdater.on('update-available', (info) => {
     if (prompting) return
     prompting = true
@@ -54,11 +56,11 @@ export function initAutoUpdater(): void {
     dialog
       .showMessageBox(win, {
         type: 'info',
-        buttons: ['Download', 'Not now'],
+        buttons: ['Update and Restart', 'Not now'],
         defaultId: 0,
         cancelId: 1,
         message: `Version ${info.version} is available`,
-        detail: 'Download it now? You can keep working while it downloads.'
+        detail: 'Downloads the update, then restarts thinking canvas to install it.'
       })
       .then(({ response }) => {
         prompting = false
@@ -69,42 +71,30 @@ export function initAutoUpdater(): void {
       })
   })
 
-  // Download finished — offer to restart into it.
-  autoUpdater.on('update-downloaded', (info) => {
+  // Download finished — the user already consented at the "update available"
+  // prompt, so restart into the new version immediately, no second dialog.
+  autoUpdater.on('update-downloaded', () => {
     const win = BrowserWindow.getAllWindows()[0]
     if (win && !win.isDestroyed()) {
       win.setProgressBar(-1) // clear the Dock bar
       win.webContents.send('update:progress', { percent: 100, done: true })
     }
-    dialog
-      .showMessageBox(win, {
-        type: 'info',
-        buttons: ['Restart now', 'Later'],
-        defaultId: 0,
-        cancelId: 1,
-        message: `Version ${info.version} is ready`,
-        detail: 'Restart thinking canvas to finish updating.'
-      })
-      .then(({ response }) => {
-        if (response !== 0) return
-        // Hand off to Squirrel. quitAndInstall submits the ShipIt helper to
-        // launchd, then terminates this process; ShipIt waits for us to die,
-        // swaps the bundle in /Applications, and relaunches.
-        //
-        // Do NOT app.exit() here as a "fallback": a hard exit races the launchd
-        // handoff and strands the install (bundle staged but never swapped),
-        // which is exactly what we saw — /Applications stuck on the old version
-        // with no ShipIt.log. If the native terminate is ever cancelled and the
-        // process lingers, autoInstallOnAppQuit (set above) still installs it on
-        // the next ordinary quit, so the update is never lost.
-        //
-        // NOTE: this only works when the installed bundle is not quarantined.
-        // A com.apple.quarantine flag makes macOS translocate the app and blocks
-        // the in-place swap, so the "update" lands on a throwaway copy and
-        // reverts on next launch. Signed+notarized DMG installs avoid this.
-        setImmediate(() => autoUpdater.quitAndInstall(false, true))
-      })
-      .catch(() => {})
+    // Hand off to Squirrel. quitAndInstall submits the ShipIt helper to
+    // launchd, then terminates this process; ShipIt waits for us to die,
+    // swaps the bundle in /Applications, and relaunches.
+    //
+    // Do NOT app.exit() here as a "fallback": a hard exit races the launchd
+    // handoff and strands the install (bundle staged but never swapped),
+    // which is exactly what we saw — /Applications stuck on the old version
+    // with no ShipIt.log. If the native terminate is ever cancelled and the
+    // process lingers, autoInstallOnAppQuit (set above) still installs it on
+    // the next ordinary quit, so the update is never lost.
+    //
+    // NOTE: this only works when the installed bundle is not quarantined.
+    // A com.apple.quarantine flag makes macOS translocate the app and blocks
+    // the in-place swap, so the "update" lands on a throwaway copy and
+    // reverts on next launch. Signed+notarized DMG installs avoid this.
+    setImmediate(() => autoUpdater.quitAndInstall(false, true))
   })
 
   void autoUpdater.checkForUpdates()
