@@ -28,8 +28,9 @@ export GH_TOKEN="github_pat_..."
 
 ## Cutting a release
 
-1. Bump the version in `package.json` (e.g. `0.1.0` → `0.1.1`). The version
-   string is what `electron-updater` compares against, so it must increase.
+1. Bump the version in `package.json` (e.g. `0.1.0` → `0.1.1`), and commit.
+   The version string is what `electron-updater` compares against, so it must
+   increase.
 2. Source your credentials, then run:
 
    ```bash
@@ -37,9 +38,14 @@ export GH_TOKEN="github_pat_..."
    npm run release:mac
    ```
 
-   This builds, signs, notarizes, and uploads the `.dmg`, `.zip`, and
-   `latest-mac.yml` to a GitHub Release (created as a **draft**).
-3. Go to the repo's Releases page, review the draft, and **publish** it.
+   This pushes the `vX.Y.Z` tag, builds, signs, notarizes, and uploads the
+   `.dmg`, `.zip`, and `latest-mac.yml` to a **live** GitHub Release — no
+   manual publish step (`publish.releaseType: release` in electron-builder.yml).
+
+   The tag push is required: GitHub refuses to create a *published* release
+   for a tag that doesn't exist ("Published releases must have a valid tag"),
+   which strands a partial release. `release:mac` runs `release:tag` first so
+   this can't happen.
 
 That's it. Anyone running an older build gets a "Version X is ready" prompt on
 next launch (or within 4 hours if left open) and restarts into the new version.
